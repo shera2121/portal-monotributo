@@ -1,0 +1,1676 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+  <title>Portal de Autogestión Monotributo - GR Servicios Contables</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            petroleo: {
+              DEFAULT: '#0F4C5C',
+              dark: '#09323d',
+              light: '#176b80',
+              50: '#f0f7f9',
+              100: '#d9edf2'
+            },
+            ladrillo: {
+              DEFAULT: '#E36414',
+              dark: '#bf4f0b',
+              light: '#f07d35',
+              50: '#fdf4ed'
+            },
+            hueso: {
+              DEFAULT: '#FBF8CC',
+              soft: '#FDFCE6',
+              border: '#EFE9A7'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- React & ReactDOM (Production) + Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      background-color: #FBF8CC;
+      color: #1e293b;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #FBF8CC;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #0F4C5C;
+      border-radius: 4px;
+    }
+    input[type=range] {
+      accent-color: #E36414;
+    }
+    @keyframes pulse-alert {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.01); }
+    }
+    .animate-pulse-alert {
+      animation: pulse-alert 2s infinite ease-in-out;
+    }
+    @keyframes spin-slow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin-custom {
+      animation: spin-slow 1s linear infinite;
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-ladrillo selection:text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    // =========================================================================
+    // CONFIGURACIÓN DEL ESTUDIO
+    // =========================================================================
+    const URL_APPS_SCRIPT_POR_DEFECTO = ""; 
+    const PIN_MODO_CONTADOR = "GR2026"; // Clave para desbloquear el panel del estudio
+
+    // ==========================================
+    // FUNCIONES SEGURAS PARA IPHONE (iOS SAFARI)
+    // ==========================================
+    const leerStorageSeguro = (clave, valorPorDefecto = "") => {
+      try {
+        const item = window.localStorage.getItem(clave);
+        return item !== null ? item : valorPorDefecto;
+      } catch (e) {
+        return valorPorDefecto;
+      }
+    };
+
+    const guardarStorageSeguro = (clave, valor) => {
+      try {
+        window.localStorage.setItem(clave, valor);
+      } catch (e) {
+        // Ignorar en modo privado de Safari iOS
+      }
+    };
+
+    const dibujarRectanguloRedondeado = (ctx, x, y, width, height, radius) => {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    };
+
+    // ==========================================
+    // ICONOS VECTORIALES (Lucide Icons)
+    // ==========================================
+    const Icon = ({ name, className = "w-5 h-5" }) => {
+      const icons = {
+        search: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+        ),
+        user: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+          </svg>
+        ),
+        lock: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        ),
+        unlock: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+          </svg>
+        ),
+        share: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        ),
+        logOut: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>
+          </svg>
+        ),
+        bot: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
+          </svg>
+        ),
+        send: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
+          </svg>
+        ),
+        alertTriangle: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>
+          </svg>
+        ),
+        checkCircle: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/>
+          </svg>
+        ),
+        shieldAlert: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>
+          </svg>
+        ),
+        calculator: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>
+          </svg>
+        ),
+        shoppingBag: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>
+          </svg>
+        ),
+        database: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>
+          </svg>
+        ),
+        pieChart: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>
+          </svg>
+        ),
+        barChart: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/>
+          </svg>
+        ),
+        refreshCw: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>
+          </svg>
+        ),
+        briefcase: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect width="20" height="14" x="2" y="7" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+          </svg>
+        ),
+        x: (
+          <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+          </svg>
+        )
+      };
+      return icons[name] || null;
+    };
+
+    // ==========================================
+    // ESCALA DE MONOTRIBUTO ARCA (Factor IPC 1.113 + IIBB Salta)
+    // ==========================================
+    const ESCALA_MONOTRIBUTO = [
+      { cat: 'A', tope: 13366473.83, cuotaServicios: 58027.18, cuotaBienes: 58027.18 },
+      { cat: 'B', tope: 19583438.39, cuotaServicios: 67379.08, cuotaBienes: 67379.08 },
+      { cat: 'C', tope: 27458260.17, cuotaServicios: 80520.12, cuotaBienes: 79030.58 },
+      { cat: 'D', tope: 34089689.04, cuotaServicios: 102612.93, cuotaBienes: 100564.81 },
+      { cat: 'E', tope: 40099421.47, cuotaServicios: 142811.45, cuotaBienes: 131267.51 },
+      { cat: 'F', tope: 50253796.92, cuotaServicios: 179784.21, cuotaBienes: 158930.65 },
+      { cat: 'G', tope: 60097324.14, cuotaServicios: 265312.94, cuotaBienes: 193815.05 },
+      { cat: 'H', tope: 91182146.99, cuotaServicios: 570706.68, cuotaBienes: 365895.01 },
+      { cat: 'I', tope: 102061835.00, cuotaServicios: 1025747.86, cuotaBienes: 536992.78 },
+      { cat: 'J', tope: 116878933.90, cuotaServicios: 1242299.76, cuotaBienes: 655793.69 },
+      { cat: 'K', tope: 140917863.50, cuotaServicios: 1704446.04, cuotaBienes: 792103.24 }
+    ];
+
+    const TOPE_MAXIMO_ANUAL = 140917863.50;
+
+    const parseMontoSeguro = (val, fallback = 0) => {
+      if (typeof val === 'number') return isNaN(val) ? fallback : val;
+      if (!val) return fallback;
+      let s = String(val).replace(/[^\d.,-]/g, '').trim();
+      if (!s) return fallback;
+      if (s.includes(',') && s.includes('.')) {
+        s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+      } else if (s.includes(',')) {
+        s = s.replace(',', '.');
+      }
+      const n = parseFloat(s);
+      return isNaN(n) ? fallback : n;
+    };
+
+    // Parser exclusivo para los inputs del simulador: ignora puntos de miles para que "500.000" sea siempre 500000
+    const parseInputSimulador = (valorTexto) => {
+      const limpio = String(valorTexto || '').replace(/\D/g, '');
+      if (!limpio) return 0;
+      const n = parseInt(limpio, 10);
+      return isNaN(n) ? 0 : n;
+    };
+
+    const formatearInputMiles = (num) => {
+      const n = Number(num);
+      if (!n || isNaN(n) || n <= 0) return '';
+      return new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 }).format(Math.round(n));
+    };
+
+    const normalizarCliente = (raw, index = 0) => {
+      const cat = String(raw.Categoria_Actual || raw['Categoría'] || raw.Categoria || 'A')
+        .replace(/categor[ií]a/i, '')
+        .trim()
+        .toUpperCase() || 'A';
+      const escalaObj = ESCALA_MONOTRIBUTO.find(e => e.cat === cat) || ESCALA_MONOTRIBUTO[0];
+      const actividadStr = String(raw.Actividad || raw['Actividad (Servicios / Cosas Muebles)'] || raw['Actividad (Servicios / Venta)'] || 'Servicios').trim();
+      const esBienes = /mueble|producto|venta/i.test(actividadStr);
+      const topeRaw = parseMontoSeguro(raw.Tope_Categoria_Actual || raw['Tope Anual Proyectado c/ IPC ($)']);
+      const cuotaDefault = esBienes ? escalaObj.cuotaBienes : escalaObj.cuotaServicios;
+
+      return {
+        Cliente: String(raw.Cliente || raw['Cliente (Telegram)'] || raw['Nombre'] || `Cliente #${index + 1}`).trim(),
+        CUIT: String(raw.CUIT || raw['Cuit'] || `S/D-${index + 1}`).trim(),
+        Chat_ID: String(raw.Chat_ID || raw['Chat ID'] || raw['Chat ID (Vinculado Directorio)'] || 'S/D').trim(),
+        Actividad: actividadStr,
+        Categoria_Actual: cat,
+        Importe_Cuota: parseMontoSeguro(raw.Importe_Cuota || raw['Importe Cuota'] || raw['Importe Cuota Mes'], cuotaDefault),
+        Dia_Vencimiento: parseMontoSeguro(raw.Dia_Vencimiento || raw['Día Vencimiento'] || raw['Vencimiento (Día)'], 20),
+        Tope_Categoria_Actual: topeRaw > 0 ? topeRaw : escalaObj.tope,
+        Tope_Maximo_Monotributo: parseMontoSeguro(raw.Tope_Maximo_Monotributo, TOPE_MAXIMO_ANUAL),
+        Total_Ventas_Facturadas: parseMontoSeguro(raw.Total_Ventas_Facturadas || raw['Ventas Anuales Acumuladas ($)'], 0),
+        Total_Compras_Gastos: parseMontoSeguro(raw.Total_Compras_Gastos || raw['Compras Acumuladas Bot ($)'], 0),
+        Estado_Pago: String(raw.Estado_Pago || raw['Estado Mes'] || raw['Estado Mes Actual'] || 'PENDIENTE').trim(),
+        Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim()
+      };
+    };
+
+    const CLIENTES_INICIALES = [
+      {
+        Cliente: "German",
+        CUIT: "S/D-1",
+        Chat_ID: "1450788980",
+        Actividad: "Servicios",
+        Categoria_Actual: "A",
+        Importe_Cuota: 58027.18,
+        Dia_Vencimiento: 20,
+        Tope_Categoria_Actual: 13366473.83,
+        Tope_Maximo_Monotributo: TOPE_MAXIMO_ANUAL,
+        Total_Ventas_Facturadas: 86000,
+        Total_Compras_Gastos: 367823.86,
+        Estado_Pago: "PENDIENTE",
+        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
+      },
+      {
+        Cliente: "Contador Read",
+        CUIT: "S/D-2",
+        Chat_ID: "8373980366",
+        Actividad: "Servicios",
+        Categoria_Actual: "D",
+        Importe_Cuota: 102612.93,
+        Dia_Vencimiento: 20,
+        Tope_Categoria_Actual: 34089689.04,
+        Tope_Maximo_Monotributo: TOPE_MAXIMO_ANUAL,
+        Total_Ventas_Facturadas: 0,
+        Total_Compras_Gastos: 111059.27,
+        Estado_Pago: "PENDIENTE",
+        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
+      },
+      {
+        Cliente: "Ana",
+        CUIT: "S/D-3",
+        Chat_ID: "1150230403",
+        Actividad: "Venta de Cosas Muebles",
+        Categoria_Actual: "E",
+        Importe_Cuota: 131267.51,
+        Dia_Vencimiento: 20,
+        Tope_Categoria_Actual: 40099421.47,
+        Tope_Maximo_Monotributo: TOPE_MAXIMO_ANUAL,
+        Total_Ventas_Facturadas: 202000,
+        Total_Compras_Gastos: 265544.80,
+        Estado_Pago: "PENDIENTE",
+        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
+      }
+    ];
+
+    const formatARS = (valor) => {
+      const num = Number(valor);
+      return new Intl.NumberFormat('es-AR', {
+        style: 'currency',
+        currency: 'ARS',
+        maximumFractionDigits: 2
+      }).format(isNaN(num) ? 0 : num);
+    };
+
+    const formatARSSinDecimales = (valor) => {
+      const num = Number(valor);
+      return new Intl.NumberFormat('es-AR', {
+        style: 'currency',
+        currency: 'ARS',
+        maximumFractionDigits: 0
+      }).format(isNaN(num) ? 0 : num);
+    };
+
+    // ==========================================
+    // GRÁFICO 1: DOUGHNUT CHART (Compatible con iOS)
+    // ==========================================
+    function DoughnutSemaforoChart({ porcentaje, porcentajeCompras, colorHex, categoria }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current || typeof Chart === 'undefined') return;
+        const ctx = canvasRef.current.getContext('2d');
+        const consumido = Math.min(100, Math.max(0, porcentaje));
+        const restante = Math.max(0, 100 - consumido);
+
+        if (chartRef.current) {
+          chartRef.current.data.datasets[0].data = [consumido, restante];
+          chartRef.current.data.datasets[0].backgroundColor = [colorHex, '#e2e8f0'];
+          chartRef.current.update();
+          return;
+        }
+
+        chartRef.current = new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+            labels: ['% Consumido del Tope c/ IPC', '% Margen Disponible'],
+            datasets: [{
+              data: [consumido, restante],
+              backgroundColor: [colorHex, '#e2e8f0'],
+              borderWidth: 0,
+              hoverOffset: 4,
+              cutout: '76%',
+              borderRadius: 6
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'bottom',
+                labels: { font: { family: 'Inter', size: 12, weight: '600' }, color: '#334155', padding: 16, usePointStyle: true }
+              },
+              tooltip: {
+                callbacks: { label: (context) => ` ${context.label}: ${Number(context.raw).toFixed(1)}%` }
+              }
+            }
+          }
+        });
+
+        return () => {
+          if (chartRef.current) {
+            chartRef.current.destroy();
+            chartRef.current = null;
+          }
+        };
+      }, [porcentaje, colorHex]);
+
+      return (
+        <div className="relative h-64 w-full flex items-center justify-center">
+          <canvas ref={canvasRef}></canvas>
+          <div className="absolute inset-0 pb-8 flex flex-col items-center justify-center pointer-events-none text-center">
+            <span className="text-3xl font-black text-slate-900 leading-none">{porcentaje.toFixed(1)}%</span>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 mt-1">Ventas Cat. {categoria}</span>
+            <span className="text-[10px] font-bold text-ladrillo mt-0.5">Compras: {porcentajeCompras.toFixed(1)}% s/ Lím.</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // GRÁFICO 2: BAR CHART (Compatible con iOS Safari)
+    // ==========================================
+    function BarComparativaChart({ ventasTotales, comprasTotales, limiteComprasAnual, porcLimiteTexto }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current || typeof Chart === 'undefined') return;
+        const ctx = canvasRef.current.getContext('2d');
+
+        const lineaLimitePlugin = {
+          id: 'lineaLimiteGastos',
+          afterDatasetsDraw(chart) {
+            const { ctx, chartArea: { left, right, top, bottom }, scales: { y } } = chart;
+            const limiteVal = chart.config.options.plugins.lineaLimiteGastos?.valor || 0;
+            const etiquetaPorc = chart.config.options.plugins.lineaLimiteGastos?.etiqueta || '40%';
+            if (limiteVal <= 0) return;
+
+            const yPos = y.getPixelForValue(limiteVal);
+            if (yPos < top || yPos > bottom) return;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([6, 4]);
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = '#dc2626';
+            ctx.moveTo(left, yPos);
+            ctx.lineTo(right, yPos);
+            ctx.stroke();
+
+            const texto = `Límite ${etiquetaPorc} Compras: ${formatARSSinDecimales(limiteVal)}`;
+            ctx.font = 'bold 11px Inter, sans-serif';
+            const textWidth = ctx.measureText(texto).width;
+            const boxX = Math.max(left, right - textWidth - 14);
+            const boxY = Math.max(top, yPos - 22);
+
+            ctx.fillStyle = '#dc2626';
+            dibujarRectanguloRedondeado(ctx, boxX, boxY, textWidth + 12, 19, 4);
+            ctx.fill();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(texto, boxX + 6, boxY + 13);
+            ctx.restore();
+          }
+        };
+
+        if (chartRef.current) {
+          chartRef.current.data.datasets[0].data = [ventasTotales, comprasTotales];
+          chartRef.current.options.plugins.lineaLimiteGastos.valor = limiteComprasAnual;
+          chartRef.current.options.plugins.lineaLimiteGastos.etiqueta = porcLimiteTexto;
+          chartRef.current.options.scales.y.suggestedMax = Math.max(ventasTotales, comprasTotales, limiteComprasAnual) * 1.18;
+          chartRef.current.update();
+          return;
+        }
+
+        chartRef.current = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: ['Ventas Acumuladas', 'Compras Bot'],
+            datasets: [{
+              label: 'Monto Acumulado ($)',
+              data: [ventasTotales, comprasTotales],
+              backgroundColor: ['#0F4C5C', '#E36414'],
+              borderRadius: 10,
+              barThickness: 54,
+              maxBarThickness: 68
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                beginAtZero: true,
+                suggestedMax: Math.max(ventasTotales, comprasTotales, limiteComprasAnual) * 1.18,
+                ticks: {
+                  font: { family: 'Inter', size: 11, weight: '600' },
+                  color: '#64748b',
+                  callback: (val) => '$' + (val / 1000000).toFixed(1) + 'M'
+                },
+                grid: { color: '#f1f5f9' }
+              },
+              x: {
+                ticks: { font: { family: 'Inter', size: 12, weight: '700' }, color: '#1e293b' },
+                grid: { display: false }
+              }
+            },
+            plugins: {
+              legend: { display: false },
+              lineaLimiteGastos: { valor: limiteComprasAnual, etiqueta: porcLimiteTexto },
+              tooltip: { callbacks: { label: (ctx) => ` ${formatARS(ctx.raw)}` } }
+            }
+          },
+          plugins: [lineaLimitePlugin]
+        });
+
+        return () => {
+          if (chartRef.current) {
+            chartRef.current.destroy();
+            chartRef.current = null;
+          }
+        };
+      }, [ventasTotales, comprasTotales, limiteComprasAnual, porcLimiteTexto]);
+
+      return (
+        <div className="h-64 w-full">
+          <canvas ref={canvasRef}></canvas>
+        </div>
+      );
+    }
+
+    // ==========================================
+    // APLICACIÓN PRINCIPAL
+    // ==========================================
+    function App() {
+      const parametrosUrl = useMemo(() => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const idParam = (params.get('id') || params.get('chat_id') || params.get('cuit') || '').trim();
+          const kParam = params.get('k') || '';
+          let scriptDecodificado = '';
+          if (kParam) {
+            try { scriptDecodificado = atob(kParam); } catch (e) {}
+          }
+          return { idParam, scriptDecodificado };
+        } catch (e) {
+          return { idParam: '', scriptDecodificado: '' };
+        }
+      }, []);
+
+      const [clientes, setClientes] = useState(CLIENTES_INICIALES);
+      const [codigoAccesoCliente, setCodigoAccesoCliente] = useState(() => parametrosUrl.idParam || "");
+      const [inputLoginCliente, setInputLoginCliente] = useState("");
+      const [errorLoginCliente, setErrorLoginCliente] = useState("");
+      const [bloqueadoPorUrl, setBloqueadoPorUrl] = useState(() => Boolean(parametrosUrl.idParam));
+
+      const [modoContador, setModoContador] = useState(false);
+      const [modalPinAbierto, setModalPinAbierto] = useState(false);
+      const [inputPin, setInputPin] = useState("");
+      const [busquedaEstudio, setBusquedaEstudio] = useState("");
+
+      const [montoSimuladoVentas, setMontoSimuladoVentas] = useState(0);
+      const [montoSimuladoCompras, setMontoSimuladoCompras] = useState(0);
+
+      const [modalDatosAbierto, setModalDatosAbierto] = useState(false);
+      const [urlAppsScript, setUrlAppsScript] = useState(() => {
+        if (parametrosUrl.scriptDecodificado && parametrosUrl.scriptDecodificado.startsWith('https://')) {
+          guardarStorageSeguro('gr_apps_script_url', parametrosUrl.scriptDecodificado);
+          return parametrosUrl.scriptDecodificado;
+        }
+        return leerStorageSeguro('gr_apps_script_url', URL_APPS_SCRIPT_POR_DEFECTO);
+      });
+
+      const [cargandoScript, setCargandoScript] = useState(false);
+      const [sincronizandoFondo, setSincronizandoFondo] = useState(false);
+      const [ultimaActualizacion, setUltimaActualizacion] = useState("--:--");
+      const [notificacion, setNotificacion] = useState(null);
+
+      const mostrarToast = (mensaje, tipo = 'exito') => {
+        setNotificacion({ mensaje, tipo });
+        setTimeout(() => setNotificacion(null), 4000);
+      };
+
+      const limpiarIdentificador = (str) => String(str || '').toLowerCase().replace(/[-\s]/g, '').trim();
+
+      const buscarClienteExacto = (identificador, lista = clientes) => {
+        const limpio = limpiarIdentificador(identificador);
+        if (!limpio) return null;
+        return lista.find(c => {
+          const chatLimpio = limpiarIdentificador(c?.Chat_ID);
+          const cuitLimpio = limpiarIdentificador(c?.CUIT);
+          return (chatLimpio && chatLimpio !== 'sd' && chatLimpio === limpio) ||
+                 (cuitLimpio && !cuitLimpio.startsWith('sd') && cuitLimpio === limpio);
+        }) || null;
+      };
+
+      const clienteActual = useMemo(() => {
+        if (!codigoAccesoCliente) return null;
+        return buscarClienteExacto(codigoAccesoCliente, clientes);
+      }, [clientes, codigoAccesoCliente]);
+
+      const clientesFiltradosEstudio = useMemo(() => {
+        if (!busquedaEstudio || !String(busquedaEstudio).trim()) return clientes;
+        const q = limpiarIdentificador(busquedaEstudio);
+        return clientes.filter(c => {
+          const nombre = String(c?.Cliente || '').toLowerCase();
+          const cuit = limpiarIdentificador(c?.CUIT);
+          const chat = limpiarIdentificador(c?.Chat_ID);
+          return nombre.includes(q) || cuit.includes(q) || chat.includes(q);
+        });
+      }, [clientes, busquedaEstudio]);
+
+      // ==========================================
+      // SINCRONIZACIÓN CON GOOGLE SHEETS
+      // ==========================================
+      const ejecutarSincronizacion = async (esSilenciosa = false, urlManual = null) => {
+        const urlDestino = (urlManual !== null ? urlManual : urlAppsScript) || leerStorageSeguro('gr_apps_script_url', URL_APPS_SCRIPT_POR_DEFECTO);
+        if (!urlDestino || !urlDestino.startsWith('https://script.google.com/')) {
+          if (!esSilenciosa) {
+            setModalDatosAbierto(true);
+            mostrarToast("Configurá la URL de Google Apps Script.", "error");
+          }
+          return;
+        }
+
+        if (esSilenciosa) {
+          setSincronizandoFondo(true);
+        } else {
+          setCargandoScript(true);
+        }
+
+        try {
+          const res = await fetch(urlDestino.trim(), { redirect: 'follow' });
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            const limpios = data
+              .filter(r => r && (r.Cliente || r['Cliente (Telegram)'] || r.CUIT || r.Chat_ID || r['Chat ID']))
+              .map((r, idx) => normalizarCliente(r, idx));
+
+            if (limpios.length > 0) {
+              setClientes(limpios);
+              guardarStorageSeguro('gr_apps_script_url', urlDestino.trim());
+              const horaActual = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+              setUltimaActualizacion(horaActual);
+              if (!esSilenciosa) {
+                setModalDatosAbierto(false);
+                mostrarToast("¡Datos sincronizados con éxito!");
+              }
+            }
+          }
+        } catch (error) {
+          if (!esSilenciosa) {
+            mostrarToast("No se pudo conectar con Google Sheets. Verificá la URL.", "error");
+          }
+        } finally {
+          setCargandoScript(false);
+          setSincronizandoFondo(false);
+        }
+      };
+
+      useEffect(() => {
+        if (urlAppsScript && urlAppsScript.startsWith('https://script.google.com/')) {
+          ejecutarSincronizacion(true);
+          const intervalo = setInterval(() => {
+            ejecutarSincronizacion(true);
+          }, 300000);
+          return () => clearInterval(intervalo);
+        }
+      }, [urlAppsScript]);
+
+      const manejarLoginPrivadoCliente = (e) => {
+        e.preventDefault();
+        setErrorLoginCliente("");
+        const encontrado = buscarClienteExacto(inputLoginCliente, clientes);
+        if (encontrado) {
+          setCodigoAccesoCliente(encontrado.Chat_ID !== 'S/D' ? encontrado.Chat_ID : encontrado.CUIT);
+          setMontoSimuladoVentas(0);
+          setMontoSimuladoCompras(0);
+          setInputLoginCliente("");
+        } else {
+          setErrorLoginCliente("No encontramos un contribuyente con ese Chat ID o CUIT. Verificá el número ingresado.");
+        }
+      };
+
+      const verificarPinContador = (e) => {
+        e.preventDefault();
+        if (inputPin.trim().toUpperCase() === PIN_MODO_CONTADOR.toUpperCase()) {
+          setModoContador(true);
+          setBloqueadoPorUrl(false);
+          setModalPinAbierto(false);
+          setInputPin("");
+          if (!codigoAccesoCliente && clientes.length > 0) {
+            setCodigoAccesoCliente(clientes[0].Chat_ID !== 'S/D' ? clientes[0].Chat_ID : clientes[0].CUIT);
+          }
+          mostrarToast("Modo Estudio Contable activado.");
+        } else {
+          mostrarToast("Clave de estudio incorrecta.", "error");
+        }
+      };
+
+      const copiarLinkPrivadoCliente = (cli, e) => {
+        if (e) e.stopPropagation();
+        const idCliente = cli.Chat_ID && cli.Chat_ID !== 'S/D' ? cli.Chat_ID : cli.CUIT;
+        const base = window.location.origin + window.location.pathname;
+        const params = new URLSearchParams();
+        params.set('id', idCliente);
+        if (urlAppsScript && urlAppsScript.startsWith('https://script.google.com/')) {
+          try {
+            params.set('k', btoa(urlAppsScript.trim()));
+          } catch (err) {}
+        }
+        const linkCompleto = `${base}?${params.toString()}`;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(linkCompleto).then(() => {
+            mostrarToast(`Link privado de ${cli.Cliente} copiado al portapapeles.`);
+          }).catch(() => {
+            window.prompt("Copiá este link privado para enviar al cliente:", linkCompleto);
+          });
+        } else {
+          window.prompt("Copiá este link privado para enviar al cliente:", linkCompleto);
+        }
+      };
+
+      // ==========================================
+      // CÁLCULOS TRIBUTARIOS UNIFICADOS (VENTAS + COMPRAS)
+      // ==========================================
+      const calculos = useMemo(() => {
+        const cli = clienteActual || CLIENTES_INICIALES[0];
+        const ventasBase = parseMontoSeguro(cli?.Total_Ventas_Facturadas);
+        const comprasBase = parseMontoSeguro(cli?.Total_Compras_Gastos);
+        const simVentas = parseMontoSeguro(montoSimuladoVentas);
+        const simCompras = parseMontoSeguro(montoSimuladoCompras);
+
+        const ventasTotales = ventasBase + simVentas;
+        const comprasTotales = comprasBase + simCompras;
+
+        const topeCat = Math.max(1, parseMontoSeguro(cli?.Tope_Categoria_Actual, 13366473.83));
+        const topeMax = Math.max(1, parseMontoSeguro(cli?.Tope_Maximo_Monotributo, TOPE_MAXIMO_ANUAL));
+        const catActualStr = String(cli?.Categoria_Actual || 'A').toUpperCase();
+
+        const porcentaje = Math.round(((ventasTotales / topeCat) * 100) * 10) / 10;
+        const margenDisponible = Math.max(0, topeCat - ventasTotales);
+        const excesoCategoria = Math.max(0, ventasTotales - topeCat);
+        const superaMaximoMonotributo = ventasTotales > topeMax || (catActualStr === 'K' && ventasTotales > topeCat);
+
+        const esVentaBienes = /mueble|producto|venta/i.test(String(cli?.Actividad || ''));
+        const coefLimiteCompras = esVentaBienes ? 0.80 : 0.40;
+        const porcLimiteTexto = esVentaBienes ? '80%' : '40%';
+        const limiteGastos80 = Math.round(topeCat * coefLimiteCompras * 100) / 100;
+        const limiteMaximoComprasK = Math.round(topeMax * coefLimiteCompras * 100) / 100;
+
+        const porcentajeGastosSobreVentas = limiteGastos80 > 0
+          ? Math.round(((comprasTotales / limiteGastos80) * 100) * 10) / 10
+          : 0;
+        const alertaExclusionGastos = comprasTotales > limiteGastos80;
+        const alertaPrecaucionGastos = !alertaExclusionGastos && (comprasTotales / limiteGastos80) >= 0.80;
+        const margenGastosDisponible = Math.max(0, limiteGastos80 - comprasTotales);
+        const excesoGastos80 = Math.max(0, comprasTotales - limiteGastos80);
+
+        // Categoría sugerida según Ventas, según Compras y Combinada
+        const escalaSugeridaVentas = ESCALA_MONOTRIBUTO.find(e => ventasTotales <= e.tope);
+        const categoriaProyectadaVentas = escalaSugeridaVentas ? escalaSugeridaVentas.cat : 'EXCLUSIÓN (Régimen General)';
+
+        const escalaSugeridaCompras = ESCALA_MONOTRIBUTO.find(e => comprasTotales <= (e.tope * coefLimiteCompras));
+        const categoriaProyectadaCompras = escalaSugeridaCompras ? escalaSugeridaCompras.cat : 'EXCLUSIÓN (Art. 20 Compras)';
+
+        const escalaSugeridaIntegral = ESCALA_MONOTRIBUTO.find(
+          e => ventasTotales <= e.tope && comprasTotales <= (e.tope * coefLimiteCompras)
+        );
+        const categoriaProyectada = escalaSugeridaIntegral ? escalaSugeridaIntegral.cat : 'EXCLUSIÓN (Régimen General)';
+
+        const idxActual = ESCALA_MONOTRIBUTO.findIndex(e => e.cat === catActualStr);
+        const catSiguiente = idxActual >= 0 && idxActual < ESCALA_MONOTRIBUTO.length - 1
+          ? ESCALA_MONOTRIBUTO[idxActual + 1].cat
+          : 'K (Tope Máximo)';
+
+        let estado = 'VERDE';
+        let tituloEstado = '🟢 DENTRO DEL LÍMITE';
+        let mensajeSemáforo = `Dentro de los parámetros de la Categoría ${catActualStr}. Margen de facturación: ${formatARS(margenDisponible)} | Margen de compras: ${formatARS(margenGastosDisponible)}.`;
+        let colorHex = '#16a34a';
+        let bgBadge = 'bg-emerald-100 text-emerald-900 border-emerald-300';
+        let bgBanner = 'bg-emerald-50 border-emerald-500 text-emerald-950';
+
+        const superaTopeIngresosOCompras = (ventasTotales > topeCat) || (comprasTotales > limiteGastos80);
+        const supera80IngresosOCompras = ((ventasTotales / topeCat) >= 0.80) || ((comprasTotales / limiteGastos80) >= 0.80);
+
+        if (superaTopeIngresosOCompras) {
+          estado = 'ROJO';
+          tituloEstado = '🔴 SUPERA TOPE - RECATEGORIZAR';
+          colorHex = '#dc2626';
+          bgBadge = 'bg-red-100 text-red-900 border-red-300';
+          bgBanner = 'bg-red-50 border-red-600 text-red-950';
+
+          if (superaMaximoMonotributo || comprasTotales > limiteMaximoComprasK) {
+            mensajeSemáforo = `ALERTA CRÍTICA DE EXCLUSIÓN: El monto simulado supera los topes máximos de la Categoría K.`;
+          } else if (ventasTotales > topeCat && comprasTotales > limiteGastos80) {
+            mensajeSemáforo = `Tanto las ventas (+${formatARS(excesoCategoria)}) como las compras (+${formatARS(excesoGastos80)}) superan el límite de Categoría ${catActualStr}. Categoría sugerida: ${categoriaProyectada}.`;
+          } else if (ventasTotales > topeCat) {
+            mensajeSemáforo = `Límite de facturación de Categoría ${catActualStr} superado en ${formatARS(excesoCategoria)}. Requiere recategorización hacia la Categoría ${categoriaProyectadaVentas}.`;
+          } else {
+            mensajeSemáforo = `Las compras (${formatARS(comprasTotales)}) superan en ${formatARS(excesoGastos80)} el límite del ${porcLimiteTexto} permitido para Categoría ${catActualStr} (${formatARS(limiteGastos80)}). Categoría requerida s/ compras: ${categoriaProyectadaCompras}.`;
+          }
+        } else if (supera80IngresosOCompras) {
+          estado = 'AMARILLO';
+          tituloEstado = '🟡 ALERTA (>80% DEL TOPE)';
+          mensajeSemáforo = `¡Atención! Alcanzaste más del 80% del límite en Categoría ${catActualStr} (Ventas al ${porcentaje.toFixed(1)}% | Compras al ${porcentajeGastosSobreVentas.toFixed(1)}%). Se sugiere proyectar recategorización a Categoría ${catSiguiente}.`;
+          colorHex = '#d97706';
+          bgBadge = 'bg-amber-100 text-amber-900 border-amber-300';
+          bgBanner = 'bg-amber-50 border-amber-500 text-amber-950';
+        }
+
+        let recomendaciones = [];
+        if (estado === 'VERDE') {
+          recomendaciones = [
+            `Facturación saludable: tenés un margen disponible de ${formatARS(margenDisponible)} antes de alcanzar el tope estimado c/ IPC de la Categoría ${catActualStr}.`,
+            `Compras controladas: llevás utilizado el ${porcentajeGastosSobreVentas.toFixed(1)}% de tu límite anual de compras (${formatARS(limiteGastos80)}). Margen de compras restante: ${formatARS(margenGastosDisponible)}.`
+          ];
+        } else if (estado === 'AMARILLO') {
+          recomendaciones = [
+            `Precaución (>80% del tope): te quedan ${formatARS(margenDisponible)} de margen de ventas y ${formatARS(margenGastosDisponible)} de margen de compras en Categoría ${catActualStr}.`,
+            `Se recomienda proyectar el encuadre hacia la Categoría ${catSiguiente} en la recategorización semestral.`
+          ];
+        } else {
+          recomendaciones = [
+            `Tope de Categoría ${catActualStr} superado. Corresponde recategorizar o revisar el encuadre impositivo hacia ${categoriaProyectada}.`,
+            `Contactá al estudio para auditar los comprobantes cargados en el Bot de Telegram.`
+          ];
+        }
+
+        if (alertaExclusionGastos) {
+          recomendaciones.unshift(
+            `⚠️ ALERTA DE COMPRAS (Art. 20): Tus compras registradas + simuladas (${formatARS(comprasTotales)}) superan en ${formatARS(excesoGastos80)} el límite del ${porcLimiteTexto} de tu categoría (${formatARS(limiteGastos80)}).`
+          );
+        }
+
+        return {
+          ventasBase,
+          comprasBase,
+          simVentas,
+          simCompras,
+          ventasTotales,
+          comprasTotales,
+          topeCat,
+          topeMax,
+          porcentaje,
+          margenDisponible,
+          excesoCategoria,
+          superaMaximoMonotributo,
+          categoriaProyectada,
+          categoriaProyectadaVentas,
+          categoriaProyectadaCompras,
+          estado,
+          tituloEstado,
+          mensajeSemáforo,
+          colorHex,
+          bgBadge,
+          bgBanner,
+          esVentaBienes,
+          porcLimiteTexto,
+          porcentajeGastosSobreVentas,
+          limiteGastos80,
+          alertaExclusionGastos,
+          alertaPrecaucionGastos,
+          margenGastosDisponible,
+          excesoGastos80,
+          recomendaciones
+        };
+      }, [clienteActual, montoSimuladoVentas, montoSimuladoCompras]);
+
+      return (
+        <div className="min-h-screen flex flex-col justify-between pb-12">
+          {notificacion && (
+            <div className={`fixed bottom-5 right-5 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-xl border text-sm font-semibold transition-all ${
+              notificacion.tipo === 'error' ? 'bg-red-600 text-white border-red-700' : 'bg-petroleo text-white border-petroleo-dark'
+            }`}>
+              <Icon name={notificacion.tipo === 'error' ? 'alertTriangle' : 'checkCircle'} className="w-5 h-5 text-ladrillo" />
+              <span>{notificacion.mensaje}</span>
+            </div>
+          )}
+
+          {/* ==========================================
+              HEADER PRINCIPAL
+             ========================================== */}
+          <header className="bg-petroleo text-white shadow-lg border-b-4 border-ladrillo sticky top-0 z-30">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-xl bg-ladrillo flex items-center justify-center shadow-md font-black text-2xl tracking-tighter border-2 border-white/25 shrink-0">
+                    GR
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold uppercase tracking-widest px-2 py-0.5 rounded bg-white/15 text-hueso">
+                        GR Servicios Contables
+                      </span>
+                      <span className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1 bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-400/30">
+                        <span className={`w-2 h-2 rounded-full ${sincronizandoFondo ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`}></span>
+                        Sincronizado: {ultimaActualizacion}
+                      </span>
+                    </div>
+                    <h1 className="text-base sm:text-xl font-extrabold tracking-tight text-white mt-0.5">
+                      Portal de Autogestión Monotributo
+                    </h1>
+                  </div>
+                </div>
+
+                {/* CONTROLES DE CABECERA */}
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
+                  <button
+                    onClick={() => ejecutarSincronizacion(false)}
+                    disabled={cargandoScript}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl shadow transition"
+                  >
+                    <Icon name="refreshCw" className={`w-4 h-4 ${cargandoScript ? 'animate-spin-custom' : ''}`} />
+                    <span>{cargandoScript ? 'Sincronizando...' : 'Actualizar Datos'}</span>
+                  </button>
+
+                  {clienteActual && !bloqueadoPorUrl && !modoContador && (
+                    <button
+                      onClick={() => { setCodigoAccesoCliente(""); setMontoSimuladoVentas(0); setMontoSimuladoCompras(0); }}
+                      className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-white/15 hover:bg-white/25 text-white px-3 py-2 rounded-xl border border-white/20 transition"
+                    >
+                      <Icon name="logOut" className="w-4 h-4" />
+                      <span>Salir</span>
+                    </button>
+                  )}
+
+                  {modoContador ? (
+                    <>
+                      <button
+                        onClick={() => setModalDatosAbierto(true)}
+                        className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-ladrillo hover:bg-ladrillo-dark text-white px-3 py-2 rounded-xl shadow transition"
+                      >
+                        <Icon name="database" className="w-4 h-4" />
+                        <span>Configurar URL</span>
+                      </button>
+                      <button
+                        onClick={() => setModoContador(false)}
+                        className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-slate-950 px-3 py-2 rounded-xl shadow transition"
+                      >
+                        <Icon name="lock" className="w-4 h-4" />
+                        <span>Cerrar Modo Contador</span>
+                      </button>
+                    </>
+                  ) : (
+                    !bloqueadoPorUrl && (
+                      <button
+                        onClick={() => setModalPinAbierto(true)}
+                        className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-petroleo-dark/80 hover:bg-petroleo-dark text-hueso/90 px-3 py-2 rounded-xl border border-white/15 transition"
+                        title="Acceso exclusivo para el Estudio Contable"
+                      >
+                        <Icon name="lock" className="w-3.5 h-3.5" />
+                        <span>Modo Contador</span>
+                      </button>
+                    )
+                  )}
+                </div>
+
+              </div>
+            </div>
+          </header>
+
+          {/* ==========================================
+              CONTENEDOR PRINCIPAL
+             ========================================== */}
+          <main className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pt-6 space-y-6 flex-1">
+
+            {/* PANEL EXCLUSIVO MODO CONTADOR */}
+            {modoContador && (
+              <section className="bg-white rounded-2xl p-4 sm:p-5 shadow-md border-2 border-ladrillo space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                  <div>
+                    <span className="text-[11px] font-black uppercase tracking-wider bg-ladrillo text-white px-2.5 py-0.5 rounded">
+                      Panel Exclusivo Estudio Contable
+                    </span>
+                    <h2 className="text-base sm:text-lg font-extrabold text-petroleo mt-1">
+                      Directorio de Clientes y Generador de Links Privados ({clientesFiltradosEstudio.length})
+                    </h2>
+                    <p className="text-xs text-slate-600">
+                      Tocá <strong>"Copiar Link Privado"</strong> en la tarjeta de cualquier cliente para enviarle por WhatsApp o Telegram su acceso exclusivo.
+                    </p>
+                  </div>
+
+                  <div className="relative sm:w-72">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                      <Icon name="search" className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="text"
+                      value={busquedaEstudio}
+                      onChange={(e) => setBusquedaEstudio(e.target.value)}
+                      placeholder="Filtrar cliente en el estudio..."
+                      className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-300 rounded-xl text-base sm:text-xs font-semibold focus:outline-none focus:border-petroleo"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-60 overflow-y-auto pr-1">
+                  {clientesFiltradosEstudio.map((cli, idx) => {
+                    const idCli = cli.Chat_ID && cli.Chat_ID !== 'S/D' ? cli.Chat_ID : cli.CUIT;
+                    const activo = clienteActual && (limpiarIdentificador(clienteActual.Chat_ID) === limpiarIdentificador(cli.Chat_ID)) && (clienteActual.Cliente === cli.Cliente);
+                    return (
+                      <div
+                        key={idCli + idx}
+                        onClick={() => { setCodigoAccesoCliente(idCli); setMontoSimuladoVentas(0); setMontoSimuladoCompras(0); }}
+                        className={`cursor-pointer p-3 rounded-xl border-2 transition flex flex-col justify-between gap-2 ${
+                          activo ? 'bg-petroleo text-white border-petroleo shadow-md' : 'bg-slate-50 hover:bg-hueso/50 text-slate-800 border-slate-200'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-extrabold text-sm truncate">{cli.Cliente}</span>
+                            <span className={`text-[11px] font-black px-2 py-0.5 rounded ${activo ? 'bg-ladrillo text-white' : 'bg-petroleo/10 text-petroleo'}`}>
+                              Cat. {cli.Categoria_Actual}
+                            </span>
+                          </div>
+                          <p className={`text-xs font-mono mt-0.5 ${activo ? 'text-hueso' : 'text-slate-500'}`}>
+                            Chat ID: {cli.Chat_ID} {cli.CUIT && !cli.CUIT.startsWith('S/D') ? `| CUIT: ${cli.CUIT}` : ''}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => copiarLinkPrivadoCliente(cli, e)}
+                          className={`w-full inline-flex items-center justify-center gap-1.5 text-xs font-extrabold py-2 px-3 rounded-lg transition ${
+                            activo ? 'bg-ladrillo hover:bg-ladrillo-dark text-white' : 'bg-petroleo hover:bg-petroleo-dark text-white'
+                          }`}
+                        >
+                          <Icon name="share" className="w-3.5 h-3.5" />
+                          <span>Copiar Link Privado</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {/* PANTALLA DE ACCESO PRIVADO */}
+            {!clienteActual ? (
+              <section className="max-w-md mx-auto my-8 bg-white rounded-2xl shadow-xl border-t-4 border-petroleo p-6 sm:p-8 space-y-6">
+                <div className="text-center space-y-2">
+                  <div className="w-16 h-16 rounded-2xl bg-petroleo text-white flex items-center justify-center mx-auto shadow-md border-2 border-ladrillo">
+                    <Icon name="lock" className="w-8 h-8 text-ladrillo" />
+                  </div>
+                  <span className="inline-block text-[11px] font-extrabold uppercase tracking-widest text-ladrillo bg-ladrillo-50 px-3 py-0.5 rounded-full">
+                    Consulta Confidencial
+                  </span>
+                  <h2 className="text-xl sm:text-2xl font-black text-petroleo">
+                    Acceso Privado de Clientes
+                  </h2>
+                  <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    Ingresá tu <strong>Chat ID de Telegram</strong> o tu <strong>CUIT</strong> para visualizar exclusivamente tu Semáforo de Monotributo.
+                  </p>
+                </div>
+
+                <form onSubmit={manejarLoginPrivadoCliente} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-extrabold uppercase text-petroleo mb-1.5">
+                      Tu Chat ID de Telegram o CUIT
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={inputLoginCliente}
+                      onChange={(e) => setInputLoginCliente(e.target.value)}
+                      placeholder="Ej: 1450788980 o tu CUIT"
+                      className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 text-base font-bold text-slate-900 focus:outline-none focus:border-petroleo"
+                    />
+                  </div>
+
+                  {errorLoginCliente && (
+                    <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-center gap-2">
+                      <Icon name="alertTriangle" className="w-4 h-4 shrink-0" />
+                      <span>{errorLoginCliente}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="w-full bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-sm py-3.5 rounded-xl shadow-md transition"
+                  >
+                    Ver Mi Estado de Monotributo
+                  </button>
+                </form>
+
+                <div className="pt-3 border-t border-slate-100 text-center">
+                  <p className="text-[11px] text-slate-500">
+                    ¿No recordás tu Chat ID? Consultalo enviando un mensaje al Bot de Telegram del Estudio.
+                  </p>
+                </div>
+              </section>
+            ) : (
+              <>
+                {/* BANNER ROJO VIBRANTE DE ALERTA CRÍTICA DE COMPRAS */}
+                {calculos.alertaExclusionGastos && (
+                  <div className="bg-red-600 text-white rounded-2xl p-4 sm:p-5 shadow-xl border-2 border-red-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-pulse-alert">
+                    <div className="flex items-start sm:items-center gap-3.5">
+                      <div className="p-2.5 rounded-xl bg-white/15 shrink-0">
+                        <Icon name="shieldAlert" className="w-7 h-7 text-hueso" />
+                      </div>
+                      <div>
+                        <span className="text-[11px] font-black uppercase tracking-widest bg-red-900/70 px-2.5 py-0.5 rounded text-hueso">
+                          Art. 20 Ley de Monotributo • Compras al {calculos.porcentajeGastosSobreVentas.toFixed(1)}% del Límite ({calculos.porcLimiteTexto})
+                        </span>
+                        <p className="text-sm sm:text-base font-extrabold mt-1 leading-snug">
+                          ⚠️ RIESGO DE EXCLUSIÓN / RECATEGORIZACIÓN: Tus compras y gastos ({formatARS(calculos.comprasTotales)}) superan el límite del {calculos.porcLimiteTexto} permitido para la Categoría {clienteActual.Categoria_Actual} ({clienteActual.Actividad}).
+                        </p>
+                      </div>
+                    </div>
+                    <div className="bg-red-800/80 px-4 py-2 rounded-xl border border-red-400/40 text-right shrink-0 self-end sm:self-center">
+                      <span className="block text-[10px] uppercase font-bold text-red-200">Exceso s/ Límite {calculos.porcLimiteTexto}</span>
+                      <span className="text-lg font-black text-white">{formatARS(calculos.excesoGastos80)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* =================================================================
+                    SIMULADOR INTERACTIVO EN VIVO (VENTAS Y COMPRAS INDEPENDIENTES)
+                   ================================================================= */}
+                <section className="bg-gradient-to-r from-petroleo to-petroleo-dark text-white rounded-2xl p-4 sm:p-5 shadow-lg border-2 border-ladrillo space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/15 pb-3">
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider bg-ladrillo text-white px-3 py-1 rounded-full shadow">
+                        <Icon name="calculator" className="w-4 h-4" />
+                        Simulador Tributario con IPC (Factor 1,113)
+                      </div>
+                      <h3 className="text-base sm:text-lg font-extrabold mt-1">
+                        ¿Qué pasa si facturo o compro un monto extra?
+                      </h3>
+                      <p className="text-xs text-hueso/90">
+                        Escribí un monto, usá los botones rápidos o mové los deslizadores de <strong>Ventas</strong> o <strong>Compras</strong> para ver en vivo el impacto en tu categoría y gráficos.
+                      </p>
+                    </div>
+
+                    {(montoSimuladoVentas > 0 || montoSimuladoCompras > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => { setMontoSimuladoVentas(0); setMontoSimuladoCompras(0); }}
+                        className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold bg-red-500 hover:bg-red-600 text-white px-4 py-2.5 rounded-xl shadow-md transition shrink-0 self-start sm:self-center"
+                      >
+                        <Icon name="refreshCw" className="w-4 h-4" />
+                        <span>Resetear Simulación</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* DOS COLUMNAS DE SIMULACIÓN: 1. VENTAS | 2. COMPRAS */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    
+                    {/* MÓDULO A: SIMULADOR DE VENTAS */}
+                    <div className="bg-white/10 backdrop-blur-sm p-4 rounded-xl border border-white/15 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-xs uppercase font-extrabold text-hueso flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                          + Simular Ventas ($):
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          {[500000, 2000000, 5000000].map((monto) => (
+                            <button
+                              key={'v-' + monto}
+                              type="button"
+                              onClick={() => setMontoSimuladoVentas(prev => parseMontoSeguro(prev) + monto)}
+                              className="text-[11px] font-extrabold bg-white/15 hover:bg-emerald-600 text-white px-2.5 py-1 rounded-lg border border-white/20 transition"
+                            >
+                              +{(monto / 1000000 >= 1) ? `${monto / 1000000}M` : '500k'}
+                            </button>
+                          ))}
+                          {montoSimuladoVentas > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setMontoSimuladoVentas(0)}
+                              className="text-[11px] font-bold bg-white/10 hover:bg-red-500 text-white px-2 py-1 rounded-lg transition"
+                              title="Limpiar ventas simuladas"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-petroleo font-black text-sm pointer-events-none">$</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatearInputMiles(montoSimuladoVentas)}
+                          onChange={(e) => setMontoSimuladoVentas(parseInputSimulador(e.target.value))}
+                          placeholder="0 (Ej: 1.500.000)"
+                          className="w-full pl-7 pr-3 py-2 rounded-lg bg-white text-petroleo font-black text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <input
+                          type="range"
+                          min="0"
+                          max={Math.max(20000000, Math.round(calculos.topeCat * 1.2))}
+                          step="100000"
+                          value={montoSimuladoVentas}
+                          onChange={(e) => setMontoSimuladoVentas(parseMontoSeguro(e.target.value))}
+                          className="w-full h-2 bg-white/30 rounded-lg cursor-pointer"
+                        />
+                        <div className="flex flex-wrap justify-between text-[11px] text-hueso font-medium gap-1">
+                          <span>Base: {formatARS(calculos.ventasBase)}</span>
+                          <span>Simulado: <strong className="text-emerald-300">+ {formatARS(montoSimuladoVentas)}</strong></span>
+                          <span>Total Ventas: <strong className="text-white">{formatARS(calculos.ventasTotales)} ({calculos.porcentaje.toFixed(1)}%)</strong></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* MÓDULO B: SIMULADOR DE COMPRAS Y GASTOS */}
+                    <div className="bg-white/10 backdrop-blur-sm p-4 rounded-xl border border-ladrillo/60 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-xs uppercase font-extrabold text-hueso flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full bg-ladrillo"></span>
+                          + Simular Compras / Gastos ($):
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          {[500000, 2000000, 5000000].map((monto) => (
+                            <button
+                              key={'c-' + monto}
+                              type="button"
+                              onClick={() => setMontoSimuladoCompras(prev => parseMontoSeguro(prev) + monto)}
+                              className="text-[11px] font-extrabold bg-ladrillo/80 hover:bg-ladrillo text-white px-2.5 py-1 rounded-lg border border-white/20 transition"
+                            >
+                              +{(monto / 1000000 >= 1) ? `${monto / 1000000}M` : '500k'}
+                            </button>
+                          ))}
+                          {montoSimuladoCompras > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setMontoSimuladoCompras(0)}
+                              className="text-[11px] font-bold bg-white/10 hover:bg-red-500 text-white px-2 py-1 rounded-lg transition"
+                              title="Limpiar compras simuladas"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-ladrillo font-black text-sm pointer-events-none">$</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatearInputMiles(montoSimuladoCompras)}
+                          onChange={(e) => setMontoSimuladoCompras(parseInputSimulador(e.target.value))}
+                          placeholder="0 (Ej: 1.500.000)"
+                          className="w-full pl-7 pr-3 py-2 rounded-lg bg-white text-ladrillo font-black text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-ladrillo"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <input
+                          type="range"
+                          min="0"
+                          max={Math.max(15000000, Math.round(calculos.limiteGastos80 * 1.4))}
+                          step="100000"
+                          value={montoSimuladoCompras}
+                          onChange={(e) => setMontoSimuladoCompras(parseMontoSeguro(e.target.value))}
+                          className="w-full h-2 bg-white/30 rounded-lg cursor-pointer"
+                        />
+                        <div className="flex flex-wrap justify-between text-[11px] text-hueso font-medium gap-1">
+                          <span>Base: {formatARS(calculos.comprasBase)}</span>
+                          <span>Simulado: <strong className="text-amber-300">+ {formatARS(montoSimuladoCompras)}</strong></span>
+                          <span>Total Compras: <strong className="text-white">{formatARS(calculos.comprasTotales)} ({calculos.porcentajeGastosSobreVentas.toFixed(1)}% s/ Lím.)</strong></span>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* BARRA DE DIAGNÓSTICO EN VIVO DEL SIMULADOR */}
+                  <div className="bg-slate-900/50 rounded-xl px-4 py-2.5 border border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex flex-wrap items-center gap-4">
+                      <span>
+                        Cat. Sugerida s/ Ventas: <strong className="text-emerald-300">Cat. {calculos.categoriaProyectadaVentas}</strong>
+                      </span>
+                      <span>
+                        Cat. Requerida s/ Compras ({calculos.porcLimiteTexto}): <strong className="text-amber-300">Cat. {calculos.categoriaProyectadaCompras}</strong>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-hueso/80">Resultado Integral:</span>
+                      <span className="px-2.5 py-0.5 rounded-full font-black bg-ladrillo text-white">
+                        Cat. {calculos.categoriaProyectada} • {calculos.tituloEstado}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+
+                {/* DASHBOARD DEL CLIENTE (GRID 2 COLUMNAS) */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+                  {/* COLUMNA IZQUIERDA (7 COLUMNAS) */}
+                  <div className="lg:col-span-7 space-y-6">
+
+                    {/* TARJETA 1: FICHA CLIENTE + SEMÁFORO INGRESOS Y COMPRAS */}
+                    <section className="bg-white rounded-2xl shadow-md border-t-4 border-petroleo p-5 sm:p-6 space-y-5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-petroleo text-white">
+                              <Icon name="user" className="w-3 h-3 text-ladrillo" />
+                              MI FICHA PERSONAL
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-300">
+                              <Icon name="bot" className="w-3 h-3 text-petroleo" />
+                              Chat ID: <strong className="font-mono">{String(clienteActual.Chat_ID)}</strong>
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-ladrillo-50 text-ladrillo-dark border border-ladrillo/30">
+                              <Icon name="briefcase" className="w-3 h-3" />
+                              {String(clienteActual.Actividad)}
+                            </span>
+                          </div>
+
+                          <h2 className="text-xl sm:text-2xl font-black text-petroleo tracking-tight">{String(clienteActual.Cliente)}</h2>
+                          <p className="text-xs sm:text-sm text-slate-600">
+                            {clienteActual.CUIT && !String(clienteActual.CUIT).startsWith('S/D') && (
+                              <>
+                                CUIT: <strong className="font-mono text-slate-900 bg-slate-100 px-2 py-0.5 rounded">{String(clienteActual.CUIT)}</strong>
+                                <span className="mx-2 text-slate-300">|</span>
+                              </>
+                            )}
+                            Cuota Total: <strong className="text-petroleo">{formatARS(clienteActual.Importe_Cuota)}</strong> (Vence día {clienteActual.Dia_Vencimiento})
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-3 bg-petroleo text-white px-4 py-3 rounded-2xl shadow border-2 border-petroleo-light self-start sm:self-center shrink-0">
+                          <div className="text-right">
+                            <span className="block text-[10px] uppercase tracking-widest text-hueso font-bold">Categoría</span>
+                            <span className="block text-xs text-white/80">{clienteActual.Estado_Pago}</span>
+                          </div>
+                          <div className="w-12 h-12 rounded-xl bg-ladrillo text-white flex items-center justify-center font-black text-2xl shadow-inner border border-white/30">
+                            {clienteActual.Categoria_Actual}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`p-4 rounded-xl border-l-8 ${calculos.bgBanner}`}>
+                        <div className="flex items-start gap-3">
+                          <Icon
+                            name={calculos.estado === 'VERDE' ? 'checkCircle' : calculos.estado === 'AMARILLO' ? 'alertTriangle' : 'shieldAlert'}
+                            className="w-5 h-5 mt-0.5 shrink-0"
+                          />
+                          <div>
+                            <span className="text-[11px] font-extrabold uppercase tracking-wider opacity-75 block">
+                              Diagnóstico Monotributo: {calculos.tituloEstado}
+                            </span>
+                            <p className="text-xs sm:text-sm font-bold mt-0.5 leading-relaxed">{calculos.mensajeSemáforo}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div className="bg-petroleo-50/80 p-3.5 rounded-xl border border-petroleo/20">
+                          <span className="text-[11px] font-extrabold uppercase text-petroleo block">Ventas Acumuladas</span>
+                          <p className="text-lg font-black text-petroleo mt-1">{formatARS(calculos.ventasTotales)}</p>
+                          <span className="text-[11px] text-slate-600 font-bold">% s/ Tope: {calculos.porcentaje.toFixed(1)}%</span>
+                        </div>
+
+                        <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                          <span className="text-[11px] font-extrabold uppercase text-slate-600 block">Tope Anual c/ IPC</span>
+                          <p className="text-lg font-black text-slate-800 mt-1">{formatARS(calculos.topeCat)}</p>
+                          <span className="text-[11px] text-slate-500 font-medium">Cat. {clienteActual.Categoria_Actual} (Factor 1,113)</span>
+                        </div>
+
+                        <div className={`p-3.5 rounded-xl border ${calculos.ventasTotales > calculos.topeCat ? 'bg-red-50 border-red-300' : 'bg-emerald-50 border-emerald-300'}`}>
+                          <span className="text-[11px] font-extrabold uppercase text-slate-700 block">
+                            {calculos.ventasTotales > calculos.topeCat ? 'Exceso Ventas' : 'Margen Ventas'}
+                          </span>
+                          <p className={`text-lg font-black mt-1 ${calculos.ventasTotales > calculos.topeCat ? 'text-red-700' : 'text-emerald-800'}`}>
+                            {calculos.ventasTotales > calculos.topeCat ? `- ${formatARS(calculos.excesoCategoria)}` : formatARS(calculos.margenDisponible)}
+                          </p>
+                          <span className="text-[11px] text-slate-600 font-medium">Prom. mes: {formatARS(calculos.margenDisponible / 12)}</span>
+                        </div>
+
+                        <div className={`p-3.5 rounded-xl border ${calculos.alertaExclusionGastos ? 'bg-red-50 border-red-300' : 'bg-ladrillo-50 border-ladrillo/30'}`}>
+                          <span className="text-[11px] font-extrabold uppercase text-ladrillo-dark block">Compras Totales</span>
+                          <p className={`text-lg font-black mt-1 ${calculos.alertaExclusionGastos ? 'text-red-700' : 'text-ladrillo'}`}>
+                            {formatARS(calculos.comprasTotales)}
+                          </p>
+                          <span className="text-[11px] text-slate-600 font-bold">% s/ Lím. ({calculos.porcLimiteTexto}): {calculos.porcentajeGastosSobreVentas.toFixed(1)}%</span>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* TARJETA 2 (MÓDULO 2): CONTROL DE COMPRAS Y GASTOS */}
+                    <section className={`bg-white rounded-2xl shadow-md p-5 sm:p-6 space-y-4 border-t-4 ${
+                      calculos.alertaExclusionGastos ? 'border-red-600 ring-2 ring-red-500/20' : 'border-ladrillo'
+                    }`}>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                          <span className="text-xs font-extrabold uppercase tracking-wider text-ladrillo flex items-center gap-1.5">
+                            <Icon name="shoppingBag" className="w-4 h-4" />
+                            Control de Compras Acumuladas Bot {calculos.simCompras > 0 ? `(Incluye +${formatARS(calculos.simCompras)} simulados)` : ''}
+                          </span>
+                          <h3 className="text-lg font-extrabold text-petroleo mt-0.5">
+                            Límite Anual de Compras ({calculos.porcLimiteTexto} sobre Tope Cat. {clienteActual.Categoria_Actual})
+                          </h3>
+                        </div>
+
+                        <span className={`px-3 py-1 rounded-full text-xs font-black border self-start sm:self-center ${
+                          calculos.alertaExclusionGastos ? 'bg-red-100 text-red-800 border-red-300' : calculos.alertaPrecaucionGastos ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                        }`}>
+                          % Compras s/ Límite: {calculos.porcentajeGastosSobreVentas.toFixed(1)}%
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Para la actividad <strong>{clienteActual.Actividad}</strong> el límite anual de compras es del <strong>{calculos.porcLimiteTexto}</strong> del tope proyectado (<strong>{formatARS(calculos.limiteGastos80)}</strong>).
+                      </p>
+
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+                        <div className="flex flex-wrap justify-between items-center gap-2 text-xs font-bold">
+                          <span className="text-ladrillo">Compras Totales: {formatARS(calculos.comprasTotales)}</span>
+                          <span className="text-petroleo">Límite {calculos.porcLimiteTexto}: {formatARS(calculos.limiteGastos80)}</span>
+                        </div>
+
+                        <div className="relative pt-5 pb-2">
+                          <div className="absolute top-0 -translate-x-1/2 z-20 flex flex-col items-center" style={{ left: '80%' }}>
+                            <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-2 py-0.5 rounded shadow">UMBRAL ALERTA 80%</span>
+                          </div>
+                          <div className="w-full h-7 bg-petroleo/15 rounded-xl overflow-hidden relative border border-petroleo/30 shadow-inner">
+                            <div
+                              className={`h-full transition-all duration-500 flex items-center justify-end pr-2.5 text-xs font-black text-white ${
+                                calculos.alertaExclusionGastos ? 'bg-red-600' : calculos.alertaPrecaucionGastos ? 'bg-amber-500' : 'bg-ladrillo'
+                              }`}
+                              style={{ width: `${Math.min(100, calculos.porcentajeGastosSobreVentas)}%` }}
+                            >
+                              {calculos.porcentajeGastosSobreVentas >= 8 && `${calculos.porcentajeGastosSobreVentas.toFixed(1)}%`}
+                            </div>
+                          </div>
+                          <div className="absolute top-4 bottom-0 w-1 bg-amber-500 z-10" style={{ left: '80%' }}></div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-600">Compras (Base + Simulado):</span>
+                          <strong className="text-base font-black text-ladrillo">{formatARS(calculos.comprasTotales)}</strong>
+                        </div>
+                        <div className={`p-3 rounded-xl border flex items-center justify-between ${calculos.alertaExclusionGastos ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                          <span className="text-xs font-bold text-slate-700">{calculos.alertaExclusionGastos ? 'Exceso s/ Límite:' : 'Margen Compras Disponible:'}</span>
+                          <strong className={`text-base font-black ${calculos.alertaExclusionGastos ? 'text-red-700' : 'text-emerald-800'}`}>
+                            {calculos.alertaExclusionGastos ? `+ ${formatARS(calculos.excesoGastos80)}` : formatARS(calculos.margenGastosDisponible)}
+                          </strong>
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* TARJETA 3: RECOMENDACIONES Y ENVÍO AL BOT DE TELEGRAM */}
+                    <section className="bg-white rounded-2xl shadow-md border-t-4 border-petroleo p-5 sm:p-6 space-y-4">
+                      <h3 className="text-base font-extrabold text-petroleo uppercase tracking-wider">Recomendaciones del Estudio</h3>
+                      <ul className="space-y-2">
+                        {calculos.recomendaciones.map((rec, index) => (
+                          <li key={index} className="flex items-start gap-2.5 bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs sm:text-sm text-slate-700 font-medium">
+                            <span className="w-5 h-5 rounded-full bg-petroleo text-white text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5">{index + 1}</span>
+                            <span>{rec}</span>
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className="pt-2">
+                        <a
+                          href="https://t.me/EstudioRead_bot?start=comprobante"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full inline-flex items-center justify-center gap-2 bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-sm px-5 py-3.5 rounded-xl shadow-md transition text-center"
+                        >
+                          <Icon name="send" className="w-4 h-4" />
+                          <span>Enviar Comprobante al Bot de Telegram</span>
+                        </a>
+                      </div>
+                    </section>
+
+                  </div>
+
+                  {/* COLUMNA DERECHA (5 COLUMNAS): GRÁFICOS CHART.JS */}
+                  <div className="lg:col-span-5 space-y-6">
+
+                    {/* GRÁFICO 1: DOUGHNUT */}
+                    <section className="bg-white rounded-2xl shadow-md border-t-4 border-petroleo p-5 sm:p-6 space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div>
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-ladrillo flex items-center gap-1">
+                            <Icon name="pieChart" className="w-3.5 h-3.5" />
+                            Gráfico 1 • % Ventas y Compras
+                          </span>
+                          <h3 className="text-lg font-extrabold text-petroleo">Semáforo de Monotributo</h3>
+                        </div>
+
+                        <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl">
+                          <span className={`w-3.5 h-3.5 rounded-full ${calculos.estado === 'VERDE' ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-emerald-950 opacity-40'}`}></span>
+                          <span className={`w-3.5 h-3.5 rounded-full ${calculos.estado === 'AMARILLO' ? 'bg-amber-400 shadow-[0_0_8px_#fbbf24]' : 'bg-amber-950 opacity-40'}`}></span>
+                          <span className={`w-3.5 h-3.5 rounded-full ${calculos.estado === 'ROJO' ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' : 'bg-red-950 opacity-40'}`}></span>
+                        </div>
+                      </div>
+
+                      <DoughnutSemaforoChart
+                        porcentaje={calculos.porcentaje}
+                        porcentajeCompras={calculos.porcentajeGastosSobreVentas}
+                        colorHex={calculos.colorHex}
+                        categoria={clienteActual.Categoria_Actual}
+                      />
+
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-600">Diagnóstico Actual:</span>
+                        <span className={`font-extrabold px-2.5 py-0.5 rounded-full border ${calculos.bgBadge}`}>{calculos.tituloEstado}</span>
+                      </div>
+                    </section>
+
+                    {/* GRÁFICO 2: BAR CHART */}
+                    <section className="bg-white rounded-2xl shadow-md border-t-4 border-ladrillo p-5 sm:p-6 space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div>
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-petroleo flex items-center gap-1">
+                            <Icon name="barChart" className="w-3.5 h-3.5 text-ladrillo" />
+                            Gráfico 2 • Ventas vs. Compras Bot
+                          </span>
+                          <h3 className="text-lg font-extrabold text-petroleo">Comparativa y Límite {calculos.porcLimiteTexto}</h3>
+                        </div>
+                      </div>
+
+                      <BarComparativaChart
+                        ventasTotales={calculos.ventasTotales}
+                        comprasTotales={calculos.comprasTotales}
+                        limiteComprasAnual={calculos.limiteGastos80}
+                        porcLimiteTexto={calculos.porcLimiteTexto}
+                      />
+
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-700">Ventas (Base + Sim.):</span>
+                          <strong className="text-petroleo">{formatARS(calculos.ventasTotales)}</strong>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-700">Compras (Base + Sim.):</span>
+                          <strong className="text-ladrillo">{formatARS(calculos.comprasTotales)}</strong>
+                        </div>
+                        <div className="flex items-center justify-between pt-1 border-t border-slate-200">
+                          <span className="font-bold text-red-600">Límite Compras {calculos.porcLimiteTexto}:</span>
+                          <strong className="text-red-600">{formatARS(calculos.limiteGastos80)}</strong>
+                        </div>
+                      </div>
+                    </section>
+
+                  </div>
+
+                </div>
+              </>
+            )}
+
+          </main>
+
+          {/* MODAL PIN MODO CONTADOR */}
+          {modalPinAbierto && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border-t-4 border-petroleo space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-extrabold text-petroleo text-base">Acceso Estudio Contable</h4>
+                  <button onClick={() => setModalPinAbierto(false)} className="text-slate-400 hover:text-slate-600">
+                    <Icon name="x" className="w-5 h-5" />
+                  </button>
+                </div>
+                <form onSubmit={verificarPinContador} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                      Clave del Estudio
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="Ingresá la clave..."
+                      value={inputPin}
+                      onChange={(e) => setInputPin(e.target.value)}
+                      className="w-full p-3 rounded-xl border-2 border-slate-200 text-base font-bold focus:outline-none focus:border-petroleo"
+                    />
+                  </div>
+                  <button type="submit" className="w-full bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-sm py-3 rounded-xl shadow">
+                    Desbloquear Panel del Contador
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL CONFIGURAR URL DE GOOGLE APPS SCRIPT */}
+          {modalDatosAbierto && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border-t-4 border-petroleo space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                  <div>
+                    <span className="text-xs font-extrabold uppercase text-ladrillo">Conexión Automática</span>
+                    <h4 className="text-lg font-extrabold text-petroleo">Configurar URL de Google Apps Script</h4>
+                  </div>
+                  <button onClick={() => setModalDatosAbierto(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-5 h-5" /></button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    ejecutarSincronizacion(false, urlAppsScript);
+                  }}
+                  className="space-y-2 bg-slate-50 p-4 rounded-xl border border-slate-200"
+                >
+                  <label className="block text-xs font-extrabold uppercase text-petroleo">URL Web App (doGet /exec)</label>
+                  <p className="text-xs text-slate-600">
+                    Pegá tu URL de Google Apps Script. Al copiar el link privado de cada cliente desde el Modo Contador, esta conexión viajará automáticamente en el enlace.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                    <input
+                      type="url"
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      value={urlAppsScript}
+                      onChange={(e) => setUrlAppsScript(e.target.value)}
+                      className="flex-1 p-2.5 rounded-xl border border-slate-300 text-base sm:text-xs font-mono"
+                    />
+                    <button
+                      type="submit"
+                      disabled={cargandoScript}
+                      className="bg-petroleo hover:bg-petroleo-dark text-white font-bold text-xs px-4 py-3 sm:py-2.5 rounded-xl shrink-0"
+                    >
+                      {cargandoScript ? 'Conectando...' : 'Guardar y Sincronizar'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          <footer className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pt-8 text-center text-xs text-slate-500">
+            <p className="font-bold text-petroleo">Portal de Autogestión Monotributo - GR Servicios Contables • Acceso Confidencial por Contribuyente</p>
+          </footer>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
