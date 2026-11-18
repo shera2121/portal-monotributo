@@ -94,10 +94,9 @@
     const { useState, useMemo, useEffect, useRef } = React;
 
     // =========================================================================
-    // CONFIGURACIÓN DEL ESTUDIO
+    // CONFIGURACIÓN DEL ESTUDIO (La clave del contador se valida en el servidor)
     // =========================================================================
-    const URL_APPS_SCRIPT_POR_DEFECTO = ""; 
-    const PIN_MODO_CONTADOR = "GR2026"; // Clave para desbloquear el panel del estudio
+    const URL_APPS_SCRIPT_POR_DEFECTO = "";
 
     // ==========================================
     // FUNCIONES SEGURAS PARA IPHONE (iOS SAFARI)
@@ -315,60 +314,30 @@
         Total_Ventas_Facturadas: parseMontoSeguro(raw.Total_Ventas_Facturadas || raw['Ventas Anuales Acumuladas ($)'], 0),
         Total_Compras_Gastos: parseMontoSeguro(raw.Total_Compras_Gastos || raw['Compras Acumuladas Bot ($)'], 0),
         Estado_Pago: String(raw.Estado_Pago || raw['Estado Mes'] || raw['Estado Mes Actual'] || 'PENDIENTE').trim(),
-        Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim()
+        Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim(),
+        Link_Privado: String(raw.Link_Privado || '').trim()
       };
     };
 
-    const CLIENTES_INICIALES = [
-      {
-        Cliente: "German",
-        CUIT: "S/D-1",
-        Chat_ID: "1450788980",
-        Actividad: "Servicios",
-        Categoria_Actual: "A",
-        Importe_Cuota: 58027.18,
-        Dia_Vencimiento: 20,
-        Tope_Categoria_Actual: 13431324.65,
-        Tope_Maximo_Monotributo: TOPE_CATEGORIA_K_VIGENTE,
-        Limite_Compras_Art20_CatK: 50644335.50,
-        Total_Ventas_Facturadas: 104150,
-        Total_Compras_Gastos: 433657,
-        Estado_Pago: "PENDIENTE",
-        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
-      },
-      {
-        Cliente: "Contador Read",
-        CUIT: "S/D-2",
-        Chat_ID: "8373980366",
-        Actividad: "Servicios",
-        Categoria_Actual: "D",
-        Importe_Cuota: 102612.93,
-        Dia_Vencimiento: 20,
-        Tope_Categoria_Actual: 34255083.76,
-        Tope_Maximo_Monotributo: TOPE_CATEGORIA_K_VIGENTE,
-        Limite_Compras_Art20_CatK: 50644335.50,
-        Total_Ventas_Facturadas: 0,
-        Total_Compras_Gastos: 190921,
-        Estado_Pago: "PENDIENTE",
-        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
-      },
-      {
-        Cliente: "Ana",
-        CUIT: "S/D-3",
-        Chat_ID: "1150230403",
-        Actividad: "Venta de Cosas Muebles",
-        Categoria_Actual: "E",
-        Importe_Cuota: 131267.51,
-        Dia_Vencimiento: 20,
-        Tope_Categoria_Actual: 40293973.92,
-        Tope_Maximo_Monotributo: TOPE_CATEGORIA_K_VIGENTE,
-        Limite_Compras_Art20_CatK: 101288671.00,
-        Total_Ventas_Facturadas: 207000,
-        Total_Compras_Gastos: 279410,
-        Estado_Pago: "PENDIENTE",
-        Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE"
-      }
-    ];
+    const CLIENTE_PLANTILLA_NEUTRO = {
+      Cliente: "Contribuyente",
+      CUIT: "S/D",
+      Chat_ID: "S/D",
+      Actividad: "Servicios",
+      Categoria_Actual: "A",
+      Importe_Cuota: 58027.18,
+      Dia_Vencimiento: 20,
+      Tope_Categoria_Actual: 13431324.65,
+      Tope_Maximo_Monotributo: TOPE_CATEGORIA_K_VIGENTE,
+      Limite_Compras_Art20_CatK: 50644335.50,
+      Total_Ventas_Facturadas: 0,
+      Total_Compras_Gastos: 0,
+      Estado_Pago: "PENDIENTE",
+      Ultimo_Comprobante_Bot: "🟢 DENTRO DEL LÍMITE",
+      Link_Privado: ""
+    };
+
+    const CLIENTES_INICIALES = [];
 
     const formatARS = (valor) => {
       const num = Number(valor);
@@ -575,25 +544,37 @@
       const parametrosUrl = useMemo(() => {
         try {
           const params = new URLSearchParams(window.location.search);
-          const idParam = (params.get('id') || params.get('chat_id') || params.get('cuit') || '').trim();
+          const cuitParam = (params.get('cuit') || '').replace(/\D/g, '');
+          const chatIdParam = (params.get('chat_id') || params.get('id') || '').trim();
+          const expParam = (params.get('exp') || '').trim();
+          const sigParam = (params.get('sig') || '').trim();
           const kParam = params.get('k') || '';
           let scriptDecodificado = '';
           if (kParam) {
             try { scriptDecodificado = atob(kParam); } catch (e) {}
           }
-          return { idParam, scriptDecodificado };
+          return {
+            idParam: chatIdParam || cuitParam,
+            cuitParam,
+            chatIdParam,
+            expParam,
+            sigParam,
+            scriptDecodificado
+          };
         } catch (e) {
-          return { idParam: '', scriptDecodificado: '' };
+          return { idParam: '', cuitParam: '', chatIdParam: '', expParam: '', sigParam: '', scriptDecodificado: '' };
         }
       }, []);
 
       const [clientes, setClientes] = useState(CLIENTES_INICIALES);
       const [codigoAccesoCliente, setCodigoAccesoCliente] = useState(() => parametrosUrl.idParam || "");
+      const [inputCuitCliente, setInputCuitCliente] = useState("");
       const [inputLoginCliente, setInputLoginCliente] = useState("");
       const [errorLoginCliente, setErrorLoginCliente] = useState("");
-      const [bloqueadoPorUrl, setBloqueadoPorUrl] = useState(() => Boolean(parametrosUrl.idParam));
+      const [bloqueadoPorUrl, setBloqueadoPorUrl] = useState(() => Boolean(parametrosUrl.sigParam && parametrosUrl.chatIdParam));
 
       const [modoContador, setModoContador] = useState(false);
+      const [claveAdminSesion, setClaveAdminSesion] = useState("");
       const [modalPinAbierto, setModalPinAbierto] = useState(false);
       const [inputPin, setInputPin] = useState("");
       const [busquedaEstudio, setBusquedaEstudio] = useState("");
@@ -650,16 +631,38 @@
       }, [clientes, busquedaEstudio]);
 
       // ==========================================
-      // SINCRONIZACIÓN CON GOOGLE SHEETS
+      // SINCRONIZACIÓN AUTENTICADA CON GOOGLE SHEETS
       // ==========================================
-      const ejecutarSincronizacion = async (esSilenciosa = false, urlManual = null) => {
-        const urlDestino = (urlManual !== null ? urlManual : urlAppsScript) || leerStorageSeguro('gr_apps_script_url', URL_APPS_SCRIPT_POR_DEFECTO);
-        if (!urlDestino || !urlDestino.startsWith('https://script.google.com/')) {
+      const ejecutarSincronizacion = async (esSilenciosa = false, urlManual = null, opcionesAuth = {}) => {
+        const urlBase = (urlManual !== null ? urlManual : urlAppsScript) || leerStorageSeguro('gr_apps_script_url', URL_APPS_SCRIPT_POR_DEFECTO);
+        if (!urlBase || !urlBase.startsWith('https://script.google.com/')) {
           if (!esSilenciosa) {
             setModalDatosAbierto(true);
-            mostrarToast("Configurá la URL de Google Apps Script.", "error");
+            mostrarToast("Configurá primero la URL de Google Apps Script.", "error");
           }
-          return;
+          return false;
+        }
+
+        const query = new URLSearchParams();
+        const adminKeyUsar = opcionesAuth.adminKey || (modoContador ? claveAdminSesion : '');
+
+        if (adminKeyUsar) {
+          query.set('modo', 'contador');
+          query.set('admin_key', adminKeyUsar);
+        } else if (opcionesAuth.modoLoginManual) {
+          query.set('modo', 'login_cliente');
+          query.set('cuit', opcionesAuth.cuit);
+          query.set('chat_id', opcionesAuth.chatId);
+        } else if (parametrosUrl.sigParam && parametrosUrl.chatIdParam && parametrosUrl.expParam) {
+          query.set('cuit', parametrosUrl.cuitParam);
+          query.set('chat_id', parametrosUrl.chatIdParam);
+          query.set('exp', parametrosUrl.expParam);
+          query.set('sig', parametrosUrl.sigParam);
+        } else {
+          if (!esSilenciosa) {
+            mostrarToast("Ingresá con tu link privado de Telegram o completá tu CUIT y Chat ID.", "error");
+          }
+          return false;
         }
 
         if (esSilenciosa) {
@@ -669,7 +672,8 @@
         }
 
         try {
-          const res = await fetch(urlDestino.trim(), { redirect: 'follow' });
+          const sep = urlBase.trim().includes('?') ? '&' : '?';
+          const res = await fetch(`${urlBase.trim()}${sep}${query.toString()}`, { redirect: 'follow' });
           const data = await res.json();
           if (Array.isArray(data) && data.length > 0) {
             const limpios = data
@@ -678,19 +682,26 @@
 
             if (limpios.length > 0) {
               setClientes(limpios);
-              guardarStorageSeguro('gr_apps_script_url', urlDestino.trim());
+              guardarStorageSeguro('gr_apps_script_url', urlBase.trim());
+              setUrlAppsScript(urlBase.trim());
               const horaActual = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
               setUltimaActualizacion(horaActual);
+              if (!codigoAccesoCliente) {
+                setCodigoAccesoCliente(limpios[0].Chat_ID !== 'S/D' ? limpios[0].Chat_ID : limpios[0].CUIT);
+              }
               if (!esSilenciosa) {
                 setModalDatosAbierto(false);
                 mostrarToast("¡Datos sincronizados con éxito!");
               }
+              return true;
             }
           }
+          return false;
         } catch (error) {
           if (!esSilenciosa) {
             mostrarToast("No se pudo conectar con Google Sheets. Verificá la URL.", "error");
           }
+          return false;
         } finally {
           setCargandoScript(false);
           setSincronizandoFondo(false);
@@ -699,60 +710,75 @@
 
       useEffect(() => {
         if (urlAppsScript && urlAppsScript.startsWith('https://script.google.com/')) {
-          ejecutarSincronizacion(true);
-          const intervalo = setInterval(() => {
+          if ((parametrosUrl.sigParam && parametrosUrl.chatIdParam) || (modoContador && claveAdminSesion)) {
             ejecutarSincronizacion(true);
-          }, 300000);
-          return () => clearInterval(intervalo);
+            const intervalo = setInterval(() => {
+              ejecutarSincronizacion(true);
+            }, 300000);
+            return () => clearInterval(intervalo);
+          }
         }
-      }, [urlAppsScript]);
+      }, [urlAppsScript, modoContador, claveAdminSesion]);
 
-      const manejarLoginPrivadoCliente = (e) => {
+      const manejarLoginPrivadoCliente = async (e) => {
         e.preventDefault();
         setErrorLoginCliente("");
-        const encontrado = buscarClienteExacto(inputLoginCliente, clientes);
-        if (encontrado) {
-          setCodigoAccesoCliente(encontrado.Chat_ID !== 'S/D' ? encontrado.Chat_ID : encontrado.CUIT);
+        const cuitLimpio = String(inputCuitCliente || '').replace(/\D/g, '');
+        const chatLimpio = String(inputLoginCliente || '').trim();
+        if (cuitLimpio.length !== 11 || chatLimpio.length < 5) {
+          setErrorLoginCliente("Por seguridad debés ingresar tanto tu CUIT (11 dígitos sin guiones) como tu Chat ID único de Telegram.");
+          return;
+        }
+        const ok = await ejecutarSincronizacion(false, null, {
+          modoLoginManual: true,
+          cuit: cuitLimpio,
+          chatId: chatLimpio
+        });
+        if (ok) {
+          setCodigoAccesoCliente(chatLimpio);
           setMontoSimuladoVentas(0);
           setMontoSimuladoCompras(0);
           setInputLoginCliente("");
+          setInputCuitCliente("");
         } else {
-          setErrorLoginCliente("No encontramos un contribuyente con ese Chat ID o CUIT. Verificá el número ingresado.");
+          setErrorLoginCliente("No encontramos un contribuyente donde coincidan ese CUIT y ese Chat ID. Verificá tus datos en el Bot de Telegram.");
         }
       };
 
-      const verificarPinContador = (e) => {
+      const verificarPinContador = async (e) => {
         e.preventDefault();
-        if (inputPin.trim().toUpperCase() === PIN_MODO_CONTADOR.toUpperCase()) {
+        const pinIngresado = inputPin.trim();
+        if (!pinIngresado) return;
+        const ok = await ejecutarSincronizacion(false, urlAppsScript, { adminKey: pinIngresado });
+        if (ok) {
+          setClaveAdminSesion(pinIngresado);
           setModoContador(true);
           setBloqueadoPorUrl(false);
           setModalPinAbierto(false);
           setInputPin("");
-          if (!codigoAccesoCliente && clientes.length > 0) {
-            setCodigoAccesoCliente(clientes[0].Chat_ID !== 'S/D' ? clientes[0].Chat_ID : clientes[0].CUIT);
-          }
-          mostrarToast("Modo Estudio Contable activado.");
+          mostrarToast("Modo Estudio Contable verificado en servidor.");
         } else {
-          mostrarToast("Clave de estudio incorrecta.", "error");
+          mostrarToast("Clave de estudio incorrecta o URL de Google Apps Script inválida.", "error");
         }
       };
 
       const copiarLinkPrivadoCliente = (cli, e) => {
         if (e) e.stopPropagation();
-        const idCliente = cli.Chat_ID && cli.Chat_ID !== 'S/D' ? cli.Chat_ID : cli.CUIT;
-        const base = window.location.origin + window.location.pathname;
-        const params = new URLSearchParams();
-        params.set('id', idCliente);
-        if (urlAppsScript && urlAppsScript.startsWith('https://script.google.com/')) {
-          try {
-            params.set('k', btoa(urlAppsScript.trim()));
-          } catch (err) {}
+        let linkCompleto = cli.Link_Privado || "";
+        if (!linkCompleto) {
+          const idCliente = cli.Chat_ID && cli.Chat_ID !== 'S/D' ? cli.Chat_ID : cli.CUIT;
+          const base = window.location.origin + window.location.pathname;
+          const params = new URLSearchParams();
+          params.set('id', idCliente);
+          if (urlAppsScript && urlAppsScript.startsWith('https://script.google.com/')) {
+            try { params.set('k', btoa(urlAppsScript.trim())); } catch (err) {}
+          }
+          linkCompleto = `${base}?${params.toString()}`;
         }
-        const linkCompleto = `${base}?${params.toString()}`;
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(linkCompleto).then(() => {
-            mostrarToast(`Link privado de ${cli.Cliente} copiado al portapapeles.`);
+            mostrarToast(`Link privado firmado de ${cli.Cliente} copiado al portapapeles.`);
           }).catch(() => {
             window.prompt("Copiá este link privado para enviar al cliente:", linkCompleto);
           });
@@ -765,7 +791,7 @@
       // CÁLCULOS TRIBUTARIOS UNIFICADOS (VENTAS CON IPC 1.1184 + COMPRAS ART. 20 S/ CAT. K VIGENTE)
       // ==========================================
       const calculos = useMemo(() => {
-        const cli = clienteActual || CLIENTES_INICIALES[0];
+        const cli = clienteActual || CLIENTE_PLANTILLA_NEUTRO;
         const ventasBase = parseMontoSeguro(cli?.Total_Ventas_Facturadas);
         const comprasBase = parseMontoSeguro(cli?.Total_Compras_Gastos);
         const simVentas = parseMontoSeguro(montoSimuladoVentas);
@@ -963,7 +989,7 @@
 
                   {clienteActual && !bloqueadoPorUrl && !modoContador && (
                     <button
-                      onClick={() => { setCodigoAccesoCliente(""); setMontoSimuladoVentas(0); setMontoSimuladoCompras(0); }}
+                      onClick={() => { setCodigoAccesoCliente(""); setClientes([]); setMontoSimuladoVentas(0); setMontoSimuladoCompras(0); }}
                       className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-white/15 hover:bg-white/25 text-white px-3 py-2 rounded-xl border border-white/20 transition"
                     >
                       <Icon name="logOut" className="w-4 h-4" />
@@ -981,7 +1007,7 @@
                         <span>Configurar URL</span>
                       </button>
                       <button
-                        onClick={() => setModoContador(false)}
+                        onClick={() => { setModoContador(false); setClaveAdminSesion(""); }}
                         className="inline-flex items-center justify-center gap-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-slate-950 px-3 py-2 rounded-xl shadow transition"
                       >
                         <Icon name="lock" className="w-4 h-4" />
@@ -1096,21 +1122,32 @@
                     Acceso Privado de Clientes
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Ingresá tu <strong>Chat ID de Telegram</strong> o tu <strong>CUIT</strong> para visualizar exclusivamente tu Semáforo de Monotributo.
+                    Ingresá tu <strong>CUIT</strong> y tu <strong>Chat ID único de Telegram</strong> (o abrí el enlace directo desde el comando <code>/simulador</code> del Bot).
                   </p>
                 </div>
 
                 <form onSubmit={manejarLoginPrivadoCliente} className="space-y-4">
                   <div>
                     <label className="block text-xs font-extrabold uppercase text-petroleo mb-1.5">
-                      Tu Chat ID de Telegram o CUIT
+                      1. Tu CUIT (11 números sin guiones)
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={inputCuitCliente}
+                      onChange={(e) => setInputCuitCliente(e.target.value)}
+                      placeholder="Ej: 20123456789"
+                      className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 text-base font-bold text-slate-900 focus:outline-none focus:border-petroleo mb-3"
+                    />
+                    <label className="block text-xs font-extrabold uppercase text-petroleo mb-1.5">
+                      2. Tu Chat ID Único de Telegram
                     </label>
                     <input
                       type="text"
                       required
                       value={inputLoginCliente}
                       onChange={(e) => setInputLoginCliente(e.target.value)}
-                      placeholder="Ej: 1450788980 o tu CUIT"
+                      placeholder="Ej: 1450788980"
                       className="w-full px-4 py-3 rounded-xl border-2 border-slate-200 text-base font-bold text-slate-900 focus:outline-none focus:border-petroleo"
                     />
                   </div>
@@ -1606,7 +1643,7 @@
           {/* MODAL PIN MODO CONTADOR */}
           {modalPinAbierto && (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border-t-4 border-petroleo space-y-4">
+              <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-t-4 border-petroleo space-y-4">
                 <div className="flex items-center justify-between">
                   <h4 className="font-extrabold text-petroleo text-base">Acceso Estudio Contable</h4>
                   <button onClick={() => setModalPinAbierto(false)} className="text-slate-400 hover:text-slate-600">
@@ -1616,19 +1653,30 @@
                 <form onSubmit={verificarPinContador} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
-                      Clave del Estudio
+                      URL Web App (Google Apps Script /exec)
+                    </label>
+                    <input
+                      type="url"
+                      required
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      value={urlAppsScript}
+                      onChange={(e) => setUrlAppsScript(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border-2 border-slate-200 text-xs font-mono focus:outline-none focus:border-petroleo mb-3"
+                    />
+                    <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                      Clave del Estudio (ADMIN_PORTAL_KEY)
                     </label>
                     <input
                       type="password"
                       required
-                      placeholder="Ingresá la clave..."
+                      placeholder="Ingresá tu clave privada..."
                       value={inputPin}
                       onChange={(e) => setInputPin(e.target.value)}
                       className="w-full p-3 rounded-xl border-2 border-slate-200 text-base font-bold focus:outline-none focus:border-petroleo"
                     />
                   </div>
-                  <button type="submit" className="w-full bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-sm py-3 rounded-xl shadow">
-                    Desbloquear Panel del Contador
+                  <button type="submit" disabled={cargandoScript} className="w-full bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-sm py-3 rounded-xl shadow">
+                    {cargandoScript ? 'Verificando en servidor...' : 'Desbloquear Panel del Contador'}
                   </button>
                 </form>
               </div>
