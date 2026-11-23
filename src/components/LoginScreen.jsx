@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { AlertTriangle, KeyRound, Lock, ShieldCheck, Sparkles, UserCheck } from 'lucide-react';
+import {
+  AlertTriangle,
+  Fingerprint,
+  KeyRound,
+  Lock,
+  Shield,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  UserCheck
+} from 'lucide-react';
 import { DEMO_CREDENTIALS, ESTUDIO_INFO } from '../config.js';
 import { cleanCUIT, formatCUIT } from '../utils/fiscalCalculations.js';
 import InstallPwaBanner from './InstallPwaBanner.jsx';
@@ -9,20 +19,40 @@ export default function LoginScreen({
   cargando,
   errorExterno,
   modoDemo,
-  onAbrirModoEstudio
+  onAbrirModoEstudio,
+  privacidadAceptada,
+  onTogglePrivacidad,
+  onAbrirPrivacidad,
+  biometriaDisponible,
+  perfilBiometrico,
+  onLoginBiometrico,
+  onEliminarBiometria
 }) {
   const [cuitVisual, setCuitVisual] = useState('');
   const [pin, setPin] = useState('');
   const [errorLocal, setErrorLocal] = useState('');
+  const [verificandoBio, setVerificandoBio] = useState(false);
 
   const handleCuitChange = (e) => {
     setCuitVisual(formatCUIT(e.target.value));
     if (errorLocal) setErrorLocal('');
   };
 
+  const validarConsentimiento = () => {
+    if (!privacidadAceptada) {
+      setErrorLocal(
+        'Debés aceptar la Política de Privacidad y Términos de Uso antes de ingresar.'
+      );
+      return false;
+    }
+    return true;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorLocal('');
+    if (!validarConsentimiento()) return;
+
     const cuitLimpio = cleanCUIT(cuitVisual);
     const pinLimpio = pin.trim();
 
@@ -39,10 +69,24 @@ export default function LoginScreen({
   };
 
   const handleIngresarDemo = async () => {
+    setErrorLocal('');
+    if (!validarConsentimiento()) return;
     setCuitVisual(DEMO_CREDENTIALS.cuitFormateado);
     setPin(DEMO_CREDENTIALS.pin);
-    setErrorLocal('');
     await onLogin({ cuit: DEMO_CREDENTIALS.cuit, pin: DEMO_CREDENTIALS.pin });
+  };
+
+  const handleClickBiometria = async () => {
+    setErrorLocal('');
+    if (!validarConsentimiento()) return;
+    setVerificandoBio(true);
+    try {
+      await onLoginBiometrico();
+    } catch (err) {
+      setErrorLocal(err?.message || 'No se pudo ingresar con biometría. Usá tu CUIT y PIN.');
+    } finally {
+      setVerificandoBio(false);
+    }
   };
 
   const errorMostrar = errorLocal || errorExterno;
@@ -92,6 +136,55 @@ export default function LoginScreen({
                 </p>
               </div>
             </div>
+
+            {/* INGRESO RÁPIDO CON BIOMETRÍA / PIN DEL CELULAR (SI ESTÁ VINCULADO) */}
+            {biometriaDisponible && perfilBiometrico && (
+              <div className="bg-petroleo-50/90 border-2 border-petroleo/25 rounded-2xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-petroleo block">
+                      Acceso rápido en este dispositivo
+                    </span>
+                    <p className="text-sm font-black text-slate-900 truncate mt-0.5">
+                      {perfilBiometrico.nombre || 'Contribuyente'}
+                    </p>
+                    <p className="text-xs font-mono text-slate-600">
+                      CUIT: {formatCUIT(perfilBiometrico.cuit)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onEliminarBiometria}
+                    title="Quitar acceso biométrico de este dispositivo"
+                    className="p-1.5 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 transition shrink-0"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={cargando || verificandoBio}
+                  onClick={handleClickBiometria}
+                  className="w-full py-3.5 px-4 rounded-2xl bg-petroleo hover:bg-petroleo-dark disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm shadow-md flex items-center justify-center gap-2 transition active:scale-[0.99]"
+                >
+                  <Fingerprint className="w-5 h-5 text-hueso shrink-0" />
+                  <span>
+                    {verificandoBio
+                      ? 'Verificando identidad del celular...'
+                      : 'Ingresar con huella / rostro o PIN del celular'}
+                  </span>
+                </button>
+
+                <div className="flex items-center gap-2 pt-0.5">
+                  <div className="h-px bg-petroleo/15 flex-1" />
+                  <span className="text-[10px] font-bold uppercase text-slate-400">
+                    o ingresá con CUIT y PIN
+                  </span>
+                  <div className="h-px bg-petroleo/15 flex-1" />
+                </div>
+              </div>
+            )}
 
             {modoDemo && (
               <div className="bg-hueso border border-hueso-border rounded-2xl p-3.5 space-y-2.5">
@@ -161,6 +254,34 @@ export default function LoginScreen({
                 </p>
               </div>
 
+              {/* CASILLA OBLIGATORIA DE POLÍTICA DE PRIVACIDAD Y TÉRMINOS */}
+              <div className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-3.5 space-y-2">
+                <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={privacidadAceptada}
+                    onChange={(e) => {
+                      onTogglePrivacidad(e.target.checked);
+                      if (errorLocal) setErrorLocal('');
+                    }}
+                    className="mt-0.5 w-4 h-4 rounded accent-[#0F4C5C] shrink-0 cursor-pointer"
+                  />
+                  <span className="text-xs text-slate-700 leading-snug">
+                    Leí y acepto la{' '}
+                    <strong>Política de Privacidad (Ley 25.326)</strong> y los{' '}
+                    <strong>Términos de Uso</strong> de GR Servicios Contables, incluido el procesamiento asistido por IA de comprobantes.
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={onAbrirPrivacidad}
+                  className="inline-flex items-center gap-1.5 text-xs font-extrabold text-petroleo hover:text-ladrillo underline ml-6 transition"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Ver Política de Privacidad y Términos</span>
+                </button>
+              </div>
+
               {errorMostrar && (
                 <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2.5">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -170,8 +291,8 @@ export default function LoginScreen({
 
               <button
                 type="submit"
-                disabled={cargando}
-                className="w-full bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-60 text-white font-extrabold text-sm py-4 rounded-2xl shadow-md transition active:scale-[0.99]"
+                disabled={cargando || verificandoBio || !privacidadAceptada}
+                className="w-full bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-50 text-white font-extrabold text-sm py-4 rounded-2xl shadow-md transition active:scale-[0.99]"
               >
                 {cargando ? 'Verificando acceso...' : 'Ingresar a mi Portal'}
               </button>
@@ -194,8 +315,15 @@ export default function LoginScreen({
         </div>
       </main>
 
-      <footer className="text-center text-[11px] text-slate-400 pb-6 px-4">
-        GR Estudio Impositivo Digital • GR Servicios Contables
+      <footer className="text-center text-[11px] text-slate-400 pb-6 px-4 space-y-1">
+        <p>GR Estudio Impositivo Digital • GR Servicios Contables</p>
+        <button
+          type="button"
+          onClick={onAbrirPrivacidad}
+          className="text-petroleo font-bold hover:underline"
+        >
+          Política de Privacidad y Términos de Uso
+        </button>
       </footer>
     </div>
   );

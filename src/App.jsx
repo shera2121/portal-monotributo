@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   Database,
+  Fingerprint,
   LogOut,
   RefreshCw,
   RotateCcw,
   Share2,
+  Shield,
   X
 } from 'lucide-react';
 import { ESTUDIO_INFO } from './config.js';
@@ -36,6 +38,17 @@ import HistorialTab from './components/HistorialTab.jsx';
 import InicioTab from './components/InicioTab.jsx';
 import LoginScreen from './components/LoginScreen.jsx';
 import MiInformeTab from './components/MiInformeTab.jsx';
+import PrivacyPolicyModal, {
+  PRIVACY_CONSENT_STORAGE_KEY,
+  PRIVACY_POLICY_VERSION
+} from './components/PrivacyPolicyModal.jsx';
+import {
+  autenticarConBiometria,
+  eliminarPerfilBiometrico,
+  obtenerPerfilBiometrico,
+  registrarBiometriaDispositivo,
+  verificarDisponibilidadBiometria
+} from './utils/biometricAuth.js';
 
 const SESSION_KEY = 'gr_portal_session_v2';
 
@@ -86,6 +99,38 @@ export default function App() {
   const [directorioEstudio, setDirectorioEstudio] = useState([]);
   const [cargandoEstudio, setCargandoEstudio] = useState(false);
 
+  // Política de Privacidad y Términos (Ley 25.326)
+  const [modalPrivacidad, setModalPrivacidad] = useState(false);
+  const [privacidadAceptada, setPrivacidadAceptada] = useState(() => {
+    const saved = leerJsonSeguro(PRIVACY_CONSENT_STORAGE_KEY, null);
+    return Boolean(saved?.accepted && saved?.version === PRIVACY_POLICY_VERSION);
+  });
+
+  // Biometría / PIN del celular (WebAuthn)
+  const [biometriaDisponible, setBiometriaDisponible] = useState(false);
+  const [perfilBiometrico, setPerfilBiometrico] = useState(() => obtenerPerfilBiometrico());
+  const [activandoBiometria, setActivandoBiometria] = useState(false);
+  const [bannerBiometriaOculto, setBannerBiometriaOculto] = useState(false);
+
+  useEffect(() => {
+    verificarDisponibilidadBiometria().then((disponible) => {
+      setBiometriaDisponible(disponible);
+    });
+  }, []);
+
+  const registrarConsentimientoPrivacidad = (aceptado) => {
+    setPrivacidadAceptada(aceptado);
+    if (aceptado) {
+      guardarJsonSeguro(PRIVACY_CONSENT_STORAGE_KEY, {
+        accepted: true,
+        version: PRIVACY_POLICY_VERSION,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      eliminarStorageSeguro(PRIVACY_CONSENT_STORAGE_KEY);
+    }
+  };
+
   const mostrarToast = (mensaje, tipo = 'exito') => {
     setNotificacion({ mensaje, tipo });
     setTimeout(() => {
@@ -97,7 +142,20 @@ export default function App() {
     if (!silencioso) setCargando(true);
     setErrorLogin('');
     try {
-      const data = await getPortalData(credenciales);
+      const consentimientoActual =
+        leerJsonSeguro(PRIVACY_CONSENT_STORAGE_KEY, null) ||
+        (privacidadAceptada
+          ? {
+              accepted: true,
+              version: PRIVACY_POLICY_VERSION,
+              timestamp: new Date().toISOString()
+            }
+          : null);
+
+      const data = await getPortalData({
+        ...credenciales,
+        consentimiento: consentimientoActual
+      });
       setPortalData(data);
       const nuevaSesion = {
         cuit: data.cliente.CUIT,
@@ -114,6 +172,41 @@ export default function App() {
     } finally {
       if (!silencioso) setCargando(false);
     }
+  };
+
+  const handleActivarBiometria = async () => {
+    if (!sesion || !clienteActual) return;
+    setActivandoBiometria(true);
+    try {
+      const perfil = await registrarBiometriaDispositivo({
+        cuit: sesion.cuit,
+        pin: sesion.pin,
+        nombre: clienteActual.Cliente
+      });
+      setPerfilBiometrico(perfil);
+      setBannerBiometriaOculto(true);
+      mostrarToast('¡Listo! Activaste el ingreso con huella / rostro o PIN del celular.');
+    } catch (err) {
+      mostrarToast(
+        err?.message || 'No se pudo activar el ingreso biométrico en este dispositivo.',
+        'error'
+      );
+    } finally {
+      setActivandoBiometria(false);
+    }
+  };
+
+  const handleLoginBiometrico = async () => {
+    const res = await autenticarConBiometria();
+    if (res?.ok) {
+      await cargarDatosCliente({ cuit: res.cuit, pin: res.pin });
+    }
+  };
+
+  const handleEliminarBiometria = () => {
+    eliminarPerfilBiometrico();
+    setPerfilBiometrico(null);
+    mostrarToast('Se quitó el acceso rápido biométrico de este dispositivo.');
   };
 
   // Auto-login al abrir la app (sesión guardada en localStorage o enlace privado firmado)
@@ -301,6 +394,13 @@ export default function App() {
           errorExterno={errorLogin}
           modoDemo={modoDemo}
           onAbrirModoEstudio={() => setModalEstudio(true)}
+          privacidadAceptada={privacidadAceptada}
+          onTogglePrivacidad={registrarConsentimientoPrivacidad}
+          onAbrirPrivacidad={() => setModalPrivacidad(true)}
+          biometriaDisponible={biometriaDisponible}
+          perfilBiometrico={perfilBiometrico}
+          onLoginBiometrico={handleLoginBiometrico}
+          onEliminarBiometria={handleEliminarBiometria}
         />
       ) : (
         <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
@@ -374,6 +474,47 @@ export default function App() {
 
           {/* CONTENIDO PRINCIPAL (MOBILE-FIRST CENTRADO EN ESCRITORIO) */}
           <main className="flex-1 w-full max-w-xl mx-auto px-4 pt-4 pb-28">
+            {/* BANNER PARA ACTIVAR HUELLA / ROSTRO / PIN DEL CELULAR TRAS INICIAR SESIÓN */}
+            {biometriaDisponible &&
+              !bannerBiometriaOculto &&
+              perfilBiometrico?.cuit !== clienteActual.CUIT && (
+                <div className="mb-4 bg-white rounded-3xl border-2 border-petroleo/20 shadow-sm p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-2xl bg-petroleo-50 text-petroleo flex items-center justify-center shrink-0">
+                      <Fingerprint className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-black text-petroleo leading-tight">
+                        Ingresá más rápido y seguro
+                      </p>
+                      <p className="text-[11px] text-slate-600 leading-snug mt-0.5">
+                        Vinculá tu cuenta con la huella, rostro o PIN de bloqueo de este celular.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={activandoBiometria}
+                      onClick={handleActivarBiometria}
+                      className="flex-1 sm:flex-none bg-petroleo hover:bg-petroleo-dark disabled:opacity-60 text-white text-xs font-extrabold px-3.5 py-2.5 rounded-xl shadow-sm transition active:scale-95"
+                    >
+                      {activandoBiometria
+                        ? 'Activando...'
+                        : 'Activar huella / rostro o PIN del celular'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBannerBiometriaOculto(true)}
+                      aria-label="Ocultar aviso de biometría"
+                      className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
             {tabActiva === 'inicio' && (
               <InicioTab
                 cliente={clienteActual}
@@ -427,6 +568,40 @@ export default function App() {
                 onActualizarInforme={handleRefrescar}
               />
             )}
+
+            {/* PIE LEGAL Y ACCESO BIOMÉTRICO EN APP LOGUEADA */}
+            <footer className="mt-6 pt-4 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+              <button
+                type="button"
+                onClick={() => setModalPrivacidad(true)}
+                className="inline-flex items-center gap-1.5 font-bold text-petroleo hover:text-ladrillo hover:underline transition"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>Política de Privacidad</span>
+              </button>
+
+              {biometriaDisponible &&
+                (perfilBiometrico?.cuit === clienteActual.CUIT ? (
+                  <button
+                    type="button"
+                    onClick={handleEliminarBiometria}
+                    className="inline-flex items-center gap-1.5 font-bold text-emerald-700 hover:text-red-700 transition"
+                  >
+                    <Fingerprint className="w-3.5 h-3.5" />
+                    <span>Huella / PIN celular activo · Desactivar</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={activandoBiometria}
+                    onClick={handleActivarBiometria}
+                    className="inline-flex items-center gap-1.5 font-bold text-petroleo hover:text-ladrillo transition"
+                  >
+                    <Fingerprint className="w-3.5 h-3.5" />
+                    <span>Activar huella / rostro o PIN</span>
+                  </button>
+                ))}
+            </footer>
           </main>
 
           {/* BARRA INFERIOR FIJA DE 5 POSICIONES */}
@@ -530,6 +705,19 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* MODAL POLÍTICA DE PRIVACIDAD Y TÉRMINOS DE USO (LEY 25.326) */}
+      <PrivacyPolicyModal
+        abierto={modalPrivacidad}
+        onCerrar={() => setModalPrivacidad(false)}
+        onAceptar={
+          !clienteActual
+            ? () => {
+                registrarConsentimientoPrivacidad(true);
+                setModalPrivacidad(false);
+              }
+            : undefined
+        }
+      />
     </>
   );
 }

@@ -135,7 +135,7 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
  * GET ?action=getPortalData&cuit={cuit}&pin={pin}
  * (Con respaldo automático para el Apps Script original durante la transición)
  */
-export async function getPortalData({ cuit, pin, urlParams = null, urlManual = null }) {
+export async function getPortalData({ cuit, pin, urlParams = null, urlManual = null, consentimiento = null }) {
   const cuitLimpio = cleanCUIT(cuit);
   const pinLimpio = String(pin || '').trim();
 
@@ -195,6 +195,12 @@ export async function getPortalData({ cuit, pin, urlParams = null, urlManual = n
     pin: pinLimpio,
     chat_id: pinLimpio
   });
+
+  if (consentimiento?.accepted) {
+    qNuevo.set('privacy_accepted', 'true');
+    if (consentimiento.version) qNuevo.set('privacy_version', consentimiento.version);
+    if (consentimiento.timestamp) qNuevo.set('privacy_at', consentimiento.timestamp);
+  }
 
   const res = await fetch(`${urlBase}${sep}${qNuevo.toString()}`, { redirect: 'follow' });
   const data = await res.json();
