@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #F8FAFC;
+    color: #0f172a;
+    overscroll-behavior-y: contain;
+  }
+}
+
+/* Barra de desplazamiento prolija */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #0F4C5C;
+  border-radius: 9999px;
+}
+
+/* Deslizadores del simulador */
+input[type='range'] {
+  accent-color: #E36414;
+}
+
+/* Safe area inferior para celulares con barra de gestos (iOS / Android) */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+@keyframes pulse-alert {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.01); }
+}
+
+.animate-pulse-alert {
+  animation: pulse-alert 2.2s infinite ease-in-out;
+}
