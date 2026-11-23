@@ -108,13 +108,15 @@ export default function App() {
 
   // Biometría / PIN del celular (WebAuthn)
   const [biometriaDisponible, setBiometriaDisponible] = useState(false);
+  const [motivoSinBiometria, setMotivoSinBiometria] = useState('');
   const [perfilBiometrico, setPerfilBiometrico] = useState(() => obtenerPerfilBiometrico());
   const [activandoBiometria, setActivandoBiometria] = useState(false);
   const [bannerBiometriaOculto, setBannerBiometriaOculto] = useState(false);
 
   useEffect(() => {
-    verificarDisponibilidadBiometria().then((disponible) => {
+    verificarDisponibilidadBiometria().then(({ disponible, motivo }) => {
       setBiometriaDisponible(disponible);
+      setMotivoSinBiometria(motivo || '');
     });
   }, []);
 
@@ -183,10 +185,15 @@ export default function App() {
         pin: sesion.pin,
         nombre: clienteActual.Cliente
       });
+      if (!perfil?.credentialId) {
+        throw new Error('No se pudo validar la credencial biométrica.');
+      }
       setPerfilBiometrico(perfil);
       setBannerBiometriaOculto(true);
       mostrarToast('¡Listo! Activaste el ingreso con huella / rostro o PIN del celular.');
     } catch (err) {
+      // Nunca marcar la biometría como activa si falla o se cancela
+      setPerfilBiometrico(obtenerPerfilBiometrico());
       mostrarToast(
         err?.message || 'No se pudo activar el ingreso biométrico en este dispositivo.',
         'error'
@@ -197,9 +204,16 @@ export default function App() {
   };
 
   const handleLoginBiometrico = async () => {
+    // Bloqueo estricto: solo inicia sesión si WebAuthn resuelve con verified === true
     const res = await autenticarConBiometria();
-    if (res?.ok) {
-      await cargarDatosCliente({ cuit: res.cuit, pin: res.pin });
+    if (!res || res.ok !== true || res.verified !== true) {
+      throw new Error(
+        'No se pudo validar la huella o el PIN del celular. Intentá nuevamente o ingresá con tu CUIT y PIN del estudio.'
+      );
+    }
+    const ok = await cargarDatosCliente({ cuit: res.cuit, pin: res.pin });
+    if (!ok) {
+      throw new Error('No se pudo validar tu acceso con el estudio. Ingresá con tu CUIT y PIN.');
     }
   };
 
@@ -209,7 +223,9 @@ export default function App() {
     mostrarToast('Se quitó el acceso rápido biométrico de este dispositivo.');
   };
 
-  // Auto-login al abrir la app (sesión guardada en localStorage o enlace privado firmado)
+  // Auto-login al abrir la app:
+  // - Si el usuario tiene biometría activada en este dispositivo, NO hace auto-login silencioso
+  //   (exige pasar por huella / rostro / PIN del celular o ingresar CUIT + PIN manualmente).
   useEffect(() => {
     if (parametrosUrl.sigParam && parametrosUrl.chatIdParam) {
       cargarDatosCliente({
@@ -220,7 +236,8 @@ export default function App() {
       return;
     }
 
-    if (sesion?.cuit && sesion?.pin && !portalData) {
+    const tieneBiometriaActiva = Boolean(obtenerPerfilBiometrico());
+    if (!tieneBiometriaActiva && sesion?.cuit && sesion?.pin && !portalData) {
       cargarDatosCliente(sesion);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -398,6 +415,7 @@ export default function App() {
           onTogglePrivacidad={registrarConsentimientoPrivacidad}
           onAbrirPrivacidad={() => setModalPrivacidad(true)}
           biometriaDisponible={biometriaDisponible}
+          motivoSinBiometria={motivoSinBiometria}
           perfilBiometrico={perfilBiometrico}
           onLoginBiometrico={handleLoginBiometrico}
           onEliminarBiometria={handleEliminarBiometria}

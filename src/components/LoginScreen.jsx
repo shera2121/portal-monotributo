@@ -24,6 +24,7 @@ export default function LoginScreen({
   onTogglePrivacidad,
   onAbrirPrivacidad,
   biometriaDisponible,
+  motivoSinBiometria,
   perfilBiometrico,
   onLoginBiometrico,
   onEliminarBiometria
@@ -31,11 +32,13 @@ export default function LoginScreen({
   const [cuitVisual, setCuitVisual] = useState('');
   const [pin, setPin] = useState('');
   const [errorLocal, setErrorLocal] = useState('');
+  const [errorBiometria, setErrorBiometria] = useState('');
   const [verificandoBio, setVerificandoBio] = useState(false);
 
   const handleCuitChange = (e) => {
     setCuitVisual(formatCUIT(e.target.value));
     if (errorLocal) setErrorLocal('');
+    if (errorBiometria) setErrorBiometria('');
   };
 
   const validarConsentimiento = () => {
@@ -78,12 +81,17 @@ export default function LoginScreen({
 
   const handleClickBiometria = async () => {
     setErrorLocal('');
+    setErrorBiometria('');
     if (!validarConsentimiento()) return;
     setVerificandoBio(true);
     try {
       await onLoginBiometrico();
     } catch (err) {
-      setErrorLocal(err?.message || 'No se pudo ingresar con biometría. Usá tu CUIT y PIN.');
+      // Bloqueo estricto: nunca inicia sesión ante fallo o cancelación
+      setErrorBiometria(
+        err?.message ||
+          'No se pudo validar la huella o el PIN del celular. Intentá nuevamente o ingresá con tu CUIT y PIN del estudio.'
+      );
     } finally {
       setVerificandoBio(false);
     }
@@ -176,6 +184,13 @@ export default function LoginScreen({
                   </span>
                 </button>
 
+                {errorBiometria && (
+                  <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{errorBiometria}</span>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2 pt-0.5">
                   <div className="h-px bg-petroleo/15 flex-1" />
                   <span className="text-[10px] font-bold uppercase text-slate-400">
@@ -183,6 +198,14 @@ export default function LoginScreen({
                   </span>
                   <div className="h-px bg-petroleo/15 flex-1" />
                 </div>
+              </div>
+            )}
+
+            {/* AVISO EXPLICATIVO SI EL DISPOSITIVO NO SOPORTA WEBAUTHN O NO TIENE BIOMETRÍA */}
+            {!biometriaDisponible && motivoSinBiometria && (
+              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-600 flex items-start gap-2">
+                <Fingerprint className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                <span>{motivoSinBiometria}</span>
               </div>
             )}
 

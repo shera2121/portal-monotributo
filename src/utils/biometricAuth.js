@@ -1,18 +1,25 @@
 /**
  * ============================================================================
- * AUTENTICACIÓN BIOMÉTRICA / BLOQUEO DEL CELULAR (WebAuthn)
+ * AUTENTICACIÓN BIOMÉTRICA / BLOQUEO DEL CELULAR (WebAuthn — BLOQUEO ESTRICTO)
  * ============================================================================
  * Activa huella digital, reconocimiento facial o PIN/patrón del dispositivo
  * mediante WebAuthn (navigator.credentials.create / get con userVerification: 'required').
  *
- * Los datos biométricos nunca salen del dispositivo: el navegador solo confirma
- * que el titular del teléfono superó el desbloqueo local antes de habilitar el ingreso.
+ * Seguridad estricta:
+ * - Al activar: solo guarda el perfil si navigator.credentials.create devuelve una
+ *   credencial válida con attestationObject. Si falla o se cancela, NO se activa.
+ * - Al ingresar: verifica que navigator.credentials.get devuelva una aserción real
+ *   que coincida con el credentialId guardado, tenga firma y bandera UV (User Verified).
+ * - Si el usuario cancela o ocurre cualquier error, SIEMPRE rechaza y NUNCA inicia sesión.
  */
 
 import { formatCUIT } from './fiscalCalculations.js';
 import { eliminarStorageSeguro, guardarJsonSeguro, leerJsonSeguro } from './storage.js';
 
 const BIOMETRIC_PROFILE_KEY = 'gr_biometric_profile_v1';
+
+export const MENSAJE_FALLO_BIOMETRIA =
+  'No se pudo validar la huella o el PIN del celular. Intentá nuevamente o ingresá con tu CUIT y PIN del estudio.';
 
 function bufferABase64Url(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -54,15 +61,36 @@ export function esEntornoWebAuthnValido() {
 }
 
 export async function verificarDisponibilidadBiometria() {
-  if (!esEntornoWebAuthnValido()) return false;
+  if (!esEntornoWebAuthnValido()) {
+    const esLocal =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const motivo =
+      typeof window !== 'undefined' && !window.isSecureContext && !esLocal
+        ? 'El ingreso con huella / rostro requiere conexión segura HTTPS (disponible al publicar en Vercel). Podés ingresar con tu CUIT y PIN del estudio.'
+        : 'Este dispositivo o navegador no tiene biometría / WebAuthn disponible. Podés ingresar normalmente con tu CUIT y PIN del estudio.';
+    return { disponible: false, motivo };
+  }
+
   try {
     if (typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
       const disponible = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-      return Boolean(disponible);
+      if (!disponible) {
+        return {
+          disponible: false,
+          motivo:
+            'No detectamos huella, rostro ni PIN de bloqueo configurado en este dispositivo. Ingresá manualmente con tu CUIT y PIN del estudio.'
+        };
+      }
+      return { disponible: true, motivo: '' };
     }
-    return true;
+    return { disponible: true, motivo: '' };
   } catch {
-    return false;
+    return {
+      disponible: false,
+      motivo:
+        'No se pudo verificar la biometría del dispositivo. Ingresá manualmente con tu CUIT y PIN del estudio.'
+    };
   }
 }
 
@@ -77,8 +105,8 @@ export function eliminarPerfilBiometrico() {
 }
 
 /**
- * Registra una credencial WebAuthn en el dispositivo actual (huella / rostro / PIN celular)
- * y la vincula con el CUIT y PIN validado del contribuyente en localStorage.
+ * Registra una credencial WebAuthn en el dispositivo actual (huella / rostro / PIN celular).
+ * Si el usuario cancela o falla, lanza error y NO guarda ni marca la biometría como activa.
  */
 export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
   if (!esEntornoWebAuthnValido()) {
@@ -102,8 +130,8 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
       displayName
     },
     pubKeyCredParams: [
-      { alg: -7, type: 'public-key' },   // ES256 (Android / iOS / Windows Hello)
-      { alg: -257, type: 'public-key' }  // RS256 (fallback amplio)
+      { alg: -7, type: 'public-key' },
+      { alg: -257, type: 'public-key' }
     ],
     authenticatorSelection: {
       authenticatorAttachment: 'platform',
@@ -114,56 +142,75 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
     attestation: 'none'
   };
 
+  let credential = null;
   try {
-    const credential = await navigator.credentials.create({ publicKey: publicKeyOptions });
-    if (!credential || !credential.rawId) {
-      throw new Error('No se completó el registro biométrico.');
-    }
-
-    const perfil = {
-      credentialId: bufferABase64Url(credential.rawId),
-      cuit: String(cuit),
-      pin: String(pin),
-      nombre: displayName,
-      createdAt: new Date().toISOString()
-    };
-
-    guardarJsonSeguro(BIOMETRIC_PROFILE_KEY, perfil);
-    return perfil;
+    credential = await navigator.credentials.create({ publicKey: publicKeyOptions });
   } catch (err) {
     if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
-      throw new Error('Activación cancelada. Podés activarla más tarde o seguir usando tu CUIT y PIN.');
-    }
-    if (err?.name === 'SecurityError') {
       throw new Error(
-        'La biometría requiere abrir la app por HTTPS (en Vercel) o en localhost.'
+        'No se activó la huella ni el PIN del celular porque la operación fue cancelada. Podés reintentar más tarde.'
       );
     }
+    if (err?.name === 'SecurityError') {
+      throw new Error('La biometría requiere abrir la app por HTTPS (Vercel) o localhost.');
+    }
     throw new Error(
-      err?.message || 'No se pudo activar la huella o bloqueo del celular en este dispositivo.'
+      'No se pudo activar la huella o el PIN del celular en este dispositivo. Seguí usando tu CUIT y PIN del estudio.'
     );
   }
+
+  // Validación estricta de la credencial creada antes de guardarla
+  if (
+    !credential ||
+    credential.type !== 'public-key' ||
+    !credential.rawId ||
+    credential.rawId.byteLength === 0 ||
+    !credential.response?.attestationObject
+  ) {
+    throw new Error('El dispositivo no devolvió una credencial biométrica válida. No se activó.');
+  }
+
+  const perfil = {
+    credentialId: bufferABase64Url(credential.rawId),
+    cuit: String(cuit),
+    pin: String(pin),
+    nombre: displayName,
+    createdAt: new Date().toISOString()
+  };
+
+  guardarJsonSeguro(BIOMETRIC_PROFILE_KEY, perfil);
+  return perfil;
 }
 
 /**
- * Verifica la identidad local con huella / rostro / PIN del celular y devuelve
- * las credenciales vinculadas para iniciar sesión contra Google Apps Script.
+ * Valida estrictamente la identidad del usuario con huella / rostro / PIN del celular.
+ * NUNCA resuelve positivamente ante cancelación, falta de credencial o error.
  */
 export async function autenticarConBiometria() {
   const perfil = obtenerPerfilBiometrico();
   if (!perfil) {
-    throw new Error('No hay una credencial biométrica guardada en este dispositivo.');
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
 
   if (!esEntornoWebAuthnValido()) {
-    throw new Error('Tu navegador no soporta ingreso biométrico en este contexto. Ingresá con tu CUIT y PIN.');
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+  }
+
+  let credentialIdBytes;
+  try {
+    credentialIdBytes = base64UrlABuffer(perfil.credentialId);
+    if (!credentialIdBytes || credentialIdBytes.byteLength === 0) {
+      throw new Error('Credencial inválida');
+    }
+  } catch {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
 
   const publicKeyOptions = {
     challenge: crearChallengeAleatorio(),
     allowCredentials: [
       {
-        id: base64UrlABuffer(perfil.credentialId),
+        id: credentialIdBytes,
         type: 'public-key',
         transports: ['internal']
       }
@@ -172,21 +219,42 @@ export async function autenticarConBiometria() {
     timeout: 60000
   };
 
+  let assertion = null;
   try {
-    const assertion = await navigator.credentials.get({ publicKey: publicKeyOptions });
-    if (!assertion) {
-      throw new Error('Verificación biométrica incompleta.');
-    }
-    return {
-      ok: true,
-      cuit: perfil.cuit,
-      pin: perfil.pin,
-      nombre: perfil.nombre
-    };
-  } catch (err) {
-    if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
-      throw new Error('Ingreso biométrico cancelado. Podés reintentar o ingresar con tu CUIT y PIN.');
-    }
-    throw new Error('No se pudo verificar tu huella/rostro. Ingresá con tu CUIT y PIN del estudio.');
+    assertion = await navigator.credentials.get({ publicKey: publicKeyOptions });
+  } catch {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
+
+  // Validación criptográfica/estructural estricta de la aserción WebAuthn
+  if (
+    !assertion ||
+    assertion.type !== 'public-key' ||
+    !assertion.rawId ||
+    assertion.rawId.byteLength === 0 ||
+    !assertion.response?.authenticatorData ||
+    !assertion.response?.signature ||
+    assertion.response.signature.byteLength === 0
+  ) {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+  }
+
+  // Verificar que la credencial usada coincida exactamente con la vinculada al CUIT
+  if (bufferABase64Url(assertion.rawId) !== perfil.credentialId) {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+  }
+
+  // Verificar bandera UV (User Verified, bit 2 = 0x04 en el byte 32 de authenticatorData)
+  const authData = new Uint8Array(assertion.response.authenticatorData);
+  if (authData.byteLength < 37 || (authData[32] & 0x04) === 0) {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+  }
+
+  return {
+    ok: true,
+    verified: true,
+    cuit: perfil.cuit,
+    pin: perfil.pin,
+    nombre: perfil.nombre
+  };
 }
