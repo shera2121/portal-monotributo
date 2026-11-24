@@ -65,6 +65,103 @@ export function resetearDatosDemo() {
   return inicial;
 }
 
+function extraerUrlPdfDesdeTexto(texto = '') {
+  const str = String(texto || '');
+  const match = str.match(/https?:\/\/[^\s"'<>]+/i);
+  if (!match) return '';
+  return match[0].replace(/[.,;)\]]+$/, '');
+}
+
+/**
+ * Normaliza el listado de "Solicitudes App PWA" / documentos filtrando por CUIT del cliente
+ * y extrayendo automáticamente el enlace de PDF desde Observaciones cuando exista.
+ */
+function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
+  const bruto =
+    (Array.isArray(data.solicitudesAppPwa) && data.solicitudesAppPwa) ||
+    (Array.isArray(data.solicitudesPwa) && data.solicitudesPwa) ||
+    (Array.isArray(data.solicitudes) && data.solicitudes) ||
+    (Array.isArray(data.documentos) && data.documentos) ||
+    (Array.isArray(data.solicitudesTramites) && data.solicitudesTramites) ||
+    [];
+
+  const cuitNorm = cleanCUIT(cuitCliente);
+
+  return bruto
+    .filter((row) => {
+      if (!row || typeof row !== 'object') return false;
+      const rowCuit = cleanCUIT(row.cuit || row.CUIT || row.Cuit || '');
+      if (cuitNorm && rowCuit && rowCuit !== cuitNorm) return false;
+      return true;
+    })
+    .map((row, idx) => {
+      const observaciones = String(
+        row.observaciones ||
+          row.Observaciones ||
+          row.observacion ||
+          row.Observación ||
+          row.respuesta ||
+          row.Respuesta ||
+          ''
+      ).trim();
+
+      const pdfUrlDirecta = String(
+        row.pdfUrl ||
+          row.urlPdf ||
+          row.enlacePdf ||
+          row.linkPdf ||
+          row.archivoUrl ||
+          row.url ||
+          ''
+      ).trim();
+
+      const pdfUrl = pdfUrlDirecta || extraerUrlPdfDesdeTexto(observaciones);
+      const observacionesLimpias = pdfUrl
+        ? observaciones
+            .replace(pdfUrl, '')
+            .replace(/\b(pdf|link|enlace|archivo)\s*:?\s*$/i, '')
+            .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, '')
+            .trim()
+        : observaciones;
+
+      return {
+        id: String(row.id || row.ID || row.Id || `SOL-${idx + 1}`),
+        cuit: cleanCUIT(row.cuit || row.CUIT || cuitNorm),
+        fecha: String(
+          row.fecha ||
+            row.Fecha ||
+            row.fechaSolicitud ||
+            row['Fecha / Hora'] ||
+            row['Fecha'] ||
+            row.Timestamp ||
+            ''
+        ).trim(),
+        tipo: String(
+          row.tipo ||
+            row.Tipo ||
+            row.tramite ||
+            row['Tipo de Solicitud'] ||
+            row['Trámite'] ||
+            row.impuesto ||
+            'Documento'
+        ).trim(),
+        detalle: String(
+          row.detalle ||
+            row.Detalle ||
+            row.descripcion ||
+            row['Descripción'] ||
+            (row.impuesto ? `${row.impuesto}${row.periodo ? ` (${row.periodo})` : ''}` : '') ||
+            row.periodo ||
+            ''
+        ).trim(),
+        estado: String(row.estado || row.Estado || 'Solicitado').trim(),
+        observaciones,
+        observacionesLimpias,
+        pdfUrl
+      };
+    });
+}
+
 /**
  * Normaliza cualquier respuesta del backend (nuevo contrato getPortalData o legacy array)
  */
@@ -85,13 +182,15 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
       cli.Total_Compras_Gastos = Number(resumen.comprasGastosAcumulados) || 0;
     }
 
+    const solicitudesNorm = normalizarSolicitudesDocumentos(data, cli.CUIT || cuitBuscado);
+
     return {
       cliente: cli,
       resumen12Meses: resumen,
       ventas: Array.isArray(data.ventas) ? data.ventas : [],
       comprasGastos: Array.isArray(data.comprasGastos) ? data.comprasGastos : [],
       alertasArca: Array.isArray(data.alertasArca) ? data.alertasArca : [],
-      solicitudesTramites: Array.isArray(data.solicitudesTramites) ? data.solicitudesTramites : []
+      solicitudesTramites: solicitudesNorm
     };
   }
 
@@ -158,6 +257,7 @@ export async function getPortalData({ cuit, pin, urlParams = null, urlManual = n
     return {
       ...db,
       cliente: normalizarCliente(db.cliente),
+      solicitudesTramites: normalizarSolicitudesDocumentos(db, db.cliente?.CUIT || cuitLimpio),
       _demo: true
     };
   }
@@ -503,6 +603,36 @@ export async function requestConstancia({ cuit, pin, payload = {} }) {
   }
 
   return postAppsScript('requestConstancia', cuit, pin, payload);
+}
+
+/**
+ * 5. Guardar/actualizar suscripción Web Push del celular del cliente
+ * Guarda en la pestaña "Suscripciones_Push" de la planilla del estudio:
+ * { cuit, endpoint, keys: { p256dh, auth }, p256dh, auth }
+ */
+export async function savePushSubscription({ cuit, pin, payload }) {
+  const cuitLimpio = cleanCUIT(cuit || payload?.cuit);
+  const p256dh = payload?.keys?.p256dh || payload?.p256dh || '';
+  const auth = payload?.keys?.auth || payload?.auth || '';
+  const endpoint = payload?.endpoint || '';
+
+  if (estaEnModoDemo()) {
+    await esperar(300);
+    return { ok: true, demo: true, mensaje: 'Notificaciones activadas en modo demo.' };
+  }
+
+  return postAppsScript('savePushSubscription', cuitLimpio, pin, {
+    cuit: cuitLimpio,
+    endpoint,
+    keys: {
+      p256dh,
+      auth
+    },
+    p256dh,
+    auth,
+    hoja: 'Suscripciones_Push',
+    dispositivo: payload?.dispositivo || ''
+  });
 }
 
 /**

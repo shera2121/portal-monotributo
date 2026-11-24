@@ -51,7 +51,16 @@ export const ARCA_DIRECT_MODE = false;
 export const TOPE_CONSUMIDOR_FINAL = 10000000;
 
 /**
- * 5. DATOS DE IDENTIDAD DEL ESTUDIO
+ * 5. CLAVE PÚBLICA VAPID PARA NOTIFICACIONES PUSH NATIVAS (ANDROID / PWA)
+ * Se usa únicamente para suscribir el celular del cliente con pushManager.subscribe.
+ * La clave privada VAPID permanece exclusivamente en tu Centro de Control / servidor.
+ */
+export const VAPID_PUBLIC_KEY =
+  import.meta.env.VITE_VAPID_PUBLIC_KEY ||
+  'BBGt5g6phAgGSygPsGTpoCDXMAUiRMuTCafeArvobXmQOBErdtG6OcpClUQO_2boH493GT0tmT6Z4ECgATejogA';
+
+/**
+ * 6. DATOS DE IDENTIDAD DEL ESTUDIO
  */
 export const ESTUDIO_INFO = {
   nombreCorto: 'GR Estudio',

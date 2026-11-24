@@ -1,16 +1,19 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
   Bell,
+  BellRing,
   Briefcase,
   Calculator,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Clock,
   Download,
   FileBadge2,
+  FileDown,
   PieChart,
   Receipt,
   RefreshCw,
@@ -37,6 +40,11 @@ import {
   generarPdfConstancia,
   generarPdfVep
 } from '../utils/documentHelpers.js';
+import {
+  guardarEstadoPushLocal,
+  obtenerEstadoPush,
+  suscribirDispositivoPush
+} from '../utils/pushNotifications.js';
 import { BarComparativaChart, DoughnutMedidorIndividual } from './ChartsMonotributo.jsx';
 import InstallPwaBanner from './InstallPwaBanner.jsx';
 
@@ -53,17 +61,94 @@ export default function InicioTab({
   cliente,
   calculos,
   alertasArca = [],
+  solicitudesDocumentos = [],
   actualizando = false,
+  autoScrollDocumentos = false,
   onActualizarInforme,
+  onGuardarSuscripcionPush,
   onSolicitarVep,
   onSolicitarConstancia,
   onIrASimulador,
   onToast
 }) {
   const informeRealRef = useRef(null);
+  const documentosRef = useRef(null);
   const [modalVep, setModalVep] = useState(false);
   const [modalConstancia, setModalConstancia] = useState(false);
   const [alertaExpandida, setAlertaExpandida] = useState(null);
+
+  // Estado de notificaciones Push en este celular
+  const [estadoPush, setEstadoPush] = useState(() => obtenerEstadoPush(cliente?.CUIT));
+  const [activandoPush, setActivandoPush] = useState(false);
+
+  useEffect(() => {
+    setEstadoPush(obtenerEstadoPush(cliente?.CUIT));
+  }, [cliente?.CUIT]);
+
+  useEffect(() => {
+    if (autoScrollDocumentos && documentosRef.current) {
+      setTimeout(() => {
+        documentosRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 250);
+    }
+  }, [autoScrollDocumentos]);
+
+  const handleActivarNotificaciones = async () => {
+    setActivandoPush(true);
+    try {
+      const subData = await suscribirDispositivoPush({ cuit: cliente.CUIT });
+      if (onGuardarSuscripcionPush) {
+        await onGuardarSuscripcionPush(subData);
+      }
+      guardarEstadoPushLocal({ cuit: cliente.CUIT, endpoint: subData.endpoint });
+      setEstadoPush(obtenerEstadoPush(cliente.CUIT));
+      onToast('¡Notificaciones activadas en este celular! Te avisaremos cuando lleguen tus PDFs.');
+    } catch (err) {
+      setEstadoPush(obtenerEstadoPush(cliente?.CUIT));
+      onToast(err?.message || 'No se pudieron activar las notificaciones en este dispositivo.', 'error');
+    } finally {
+      setActivandoPush(false);
+    }
+  };
+
+  const handleDescargarDocumentoPdf = (doc) => {
+    if (!doc?.pdfUrl) return;
+    // En modo demo, si el link es ficticio (demo-*), generar PDF real descargable
+    if (doc.pdfUrl.includes('/demo-')) {
+      const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
+      const blob = esVep ? generarPdfVep(cliente) : generarPdfConstancia(cliente);
+      descargarBlob(blob, `${String(doc.tipo || 'Documento').replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`);
+      onToast('PDF descargado en tu dispositivo.');
+      return;
+    }
+    window.open(doc.pdfUrl, '_blank', 'noopener,noreferrer');
+    onToast('Abriendo PDF para descargar...');
+  };
+
+  const handleCompartirDocumentoPdf = async (doc) => {
+    if (!doc?.pdfUrl) return;
+    const esDemoLink = doc.pdfUrl.includes('/demo-');
+    const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
+    const blob = esDemoLink ? (esVep ? generarPdfVep(cliente) : generarPdfConstancia(cliente)) : null;
+
+    const res = await compartirDocumento({
+      titulo: `${doc.tipo} — ${cliente.Cliente}`,
+      texto: `${doc.tipo}${doc.detalle ? ` (${doc.detalle})` : ''} — GR Estudio Impositivo Digital`,
+      url: esDemoLink ? undefined : doc.pdfUrl,
+      blob,
+      nombreArchivo: `${String(doc.tipo || 'Documento').replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`
+    });
+
+    if (res.shared) {
+      onToast(
+        res.method === 'clipboard-fallback'
+          ? 'Enlace del PDF copiado para compartir.'
+          : res.method === 'download-fallback'
+            ? 'PDF descargado para compartir.'
+            : 'Documento listo para compartir.'
+      );
+    }
+  };
 
   const irAlInformeReal = () => {
     informeRealRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -207,6 +292,41 @@ export default function InicioTab({
     <div className="space-y-4">
       <InstallPwaBanner />
 
+      {/* BANNER PARA ACTIVAR NOTIFICACIONES PUSH NATIVAS EN ESTE CELULAR (SOLO SI AÚN NO OTORGÓ PERMISO / NO SUSCRIPTO) */}
+      {estadoPush.soportado && !estadoPush.suscriptoEnEsteCelular && (
+        <section className="bg-white rounded-3xl shadow-sm border-2 border-ladrillo/40 p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-ladrillo-50 text-ladrillo flex items-center justify-center shrink-0">
+              <BellRing className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-xs sm:text-sm font-black text-petroleo leading-tight">
+                Recibí tus VEPs, Constancias y Facturas al instante
+              </h3>
+              <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                {estadoPush.permiso === 'denied'
+                  ? 'Bloqueaste las notificaciones en este navegador. Habilitalas desde la configuración del sitio (candado en la barra de direcciones) para recibir avisos con sonido.'
+                  : 'Activá las notificaciones con sonido en tu celular para enterarte apenas el estudio suba tus PDFs.'}
+              </p>
+            </div>
+          </div>
+
+          {estadoPush.permiso !== 'denied' && (
+            <button
+              type="button"
+              disabled={activandoPush}
+              onClick={handleActivarNotificaciones}
+              className="w-full py-3 px-4 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-2 transition active:scale-[0.99]"
+            >
+              <BellRing className={`w-4 h-4 ${activandoPush ? 'animate-bounce' : ''}`} />
+              <span>
+                {activandoPush ? 'Activando notificaciones...' : 'Activar notificaciones en este celular'}
+              </span>
+            </button>
+          )}
+        </section>
+      )}
+
       {/* 1. TARJETA DEL CLIENTE */}
       <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 overflow-hidden">
         <div className="bg-petroleo text-white p-4 sm:p-5">
@@ -349,6 +469,120 @@ export default function InicioTab({
             </div>
           </button>
         </div>
+      </section>
+
+      {/* 3B. MIS DOCUMENTOS / DESCARGAS (SOLICITUDES APP PWA FILTRADAS POR CUIT) */}
+      <section
+        id="mis-documentos"
+        ref={documentosRef}
+        className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3.5 scroll-mt-20"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-petroleo-50 text-petroleo flex items-center justify-center shrink-0">
+              <FileDown className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-petroleo leading-tight">
+                Mis Documentos / Descargas
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                VEPs, Constancias y Facturas enviadas por el estudio
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-extrabold bg-petroleo-50 text-petroleo px-2.5 py-0.5 rounded-full border border-petroleo/15">
+            {solicitudesDocumentos.length}
+          </span>
+        </div>
+
+        {solicitudesDocumentos.length === 0 ? (
+          <div className="p-4 rounded-2xl bg-[#F8FAFC] border border-slate-200/70 text-center text-xs text-slate-500">
+            Todavía no tenés solicitudes ni documentos cargados. Cuando pidas un VEP, Constancia o Factura, el PDF para descargar aparecerá aquí.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {solicitudesDocumentos.map((doc) => {
+              const estLower = String(doc.estado || '').toLowerCase();
+              const esEnviado = estLower.includes('enviad');
+              const esError = estLower.includes('rechaz') || estLower.includes('observ') || estLower.includes('cancel');
+              const tienePdfListo = esEnviado && Boolean(doc.pdfUrl);
+
+              const badgeCls = esEnviado
+                ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
+                : esError
+                  ? 'bg-red-100 text-red-900 border-red-200'
+                  : 'bg-amber-100 text-amber-900 border-amber-200';
+
+              return (
+                <article
+                  key={doc.id}
+                  className={`rounded-2xl p-3.5 border space-y-2.5 ${
+                    tienePdfListo
+                      ? 'bg-emerald-50/35 border-emerald-200'
+                      : 'bg-[#F8FAFC] border-slate-200/80'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-black text-petroleo leading-snug">
+                        {doc.tipo}
+                      </p>
+                      {doc.fecha && (
+                        <span className="text-[11px] text-slate-500 font-semibold">
+                          {formatFechaAR(doc.fecha)}
+                        </span>
+                      )}
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2.5 py-1 rounded-full border shrink-0 ${badgeCls}`}
+                    >
+                      {esEnviado ? (
+                        <CheckCircle2 className="w-3 h-3" />
+                      ) : (
+                        <Clock className="w-3 h-3" />
+                      )}
+                      <span>{doc.estado}</span>
+                    </span>
+                  </div>
+
+                  {doc.detalle && (
+                    <p className="text-xs font-semibold text-slate-700 leading-snug">
+                      {doc.detalle}
+                    </p>
+                  )}
+
+                  {doc.observacionesLimpias && (
+                    <p className="text-[11px] text-slate-600 leading-snug">
+                      {doc.observacionesLimpias}
+                    </p>
+                  )}
+
+                  {tienePdfListo && (
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleDescargarDocumentoPdf(doc)}
+                        className="py-3.5 px-3 rounded-2xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-2 transition active:scale-[0.98]"
+                      >
+                        <Download className="w-4 h-4 shrink-0" />
+                        <span>Descargar PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCompartirDocumentoPdf(doc)}
+                        className="py-3.5 px-3 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-2 transition active:scale-[0.98]"
+                      >
+                        <Share2 className="w-4 h-4 shrink-0" />
+                        <span>Compartir</span>
+                      </button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* 4. BUZÓN DE ALERTAS ARCA (DOMICILIO FISCAL ELECTRÓNICO) */}

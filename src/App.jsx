@@ -23,6 +23,7 @@ import {
   requestInvoice,
   requestVep,
   resetearDatosDemo,
+  savePushSubscription,
   uploadReceipt
 } from './services/api.js';
 import { calcularEstadoMonotributo, formatCUIT } from './utils/fiscalCalculations.js';
@@ -61,6 +62,7 @@ export default function App() {
       const chatIdParam = (params.get('chat_id') || params.get('id') || params.get('pin') || '').trim();
       const expParam = (params.get('exp') || '').trim();
       const sigParam = (params.get('sig') || '').trim();
+      const seccionParam = (params.get('seccion') || '').trim().toLowerCase();
       const kParam = params.get('k') || '';
       let scriptDecodificado = '';
       if (kParam) {
@@ -73,9 +75,9 @@ export default function App() {
           // Ignorar parámetro malformado
         }
       }
-      return { cuitParam, chatIdParam, expParam, sigParam, scriptDecodificado };
+      return { cuitParam, chatIdParam, expParam, sigParam, seccionParam, scriptDecodificado };
     } catch {
-      return { cuitParam: '', chatIdParam: '', expParam: '', sigParam: '', scriptDecodificado: '' };
+      return { cuitParam: '', chatIdParam: '', expParam: '', sigParam: '', seccionParam: '', scriptDecodificado: '' };
     }
   }, []);
 
@@ -531,8 +533,17 @@ export default function App() {
                 cliente={clienteActual}
                 calculos={calculosReales}
                 alertasArca={portalData?.alertasArca || []}
+                solicitudesDocumentos={portalData?.solicitudesTramites || []}
                 actualizando={cargando}
+                autoScrollDocumentos={parametrosUrl.seccionParam === 'documentos'}
                 onActualizarInforme={handleRefrescar}
+                onGuardarSuscripcionPush={(subData) =>
+                  savePushSubscription({
+                    cuit: sesion?.cuit || clienteActual.CUIT,
+                    pin: sesion?.pin || '',
+                    payload: subData
+                  })
+                }
                 onSolicitarVep={handleSolicitarVep}
                 onSolicitarConstancia={handleSolicitarConstancia}
                 onIrASimulador={() => {

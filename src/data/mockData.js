@@ -320,6 +320,34 @@ export function crearDatosDemoIniciales() {
       }
     ],
 
-    solicitudesTramites: []
+    solicitudesTramites: [
+      {
+        id: 'SOL-2026-01',
+        cuit: '20345678904',
+        fecha: '2026-11-20',
+        tipo: 'VEP Monotributo',
+        detalle: 'Monotributo Integrado (Período 2026-11 — PagoMisCuentas)',
+        estado: 'Enviado',
+        observaciones: 'VEP generado listo para abonar. Descarga PDF: https://drive.google.com/file/d/demo-vep-noviembre-2026/view'
+      },
+      {
+        id: 'SOL-2026-02',
+        cuit: '20345678904',
+        fecha: '2026-11-18',
+        tipo: 'Constancia de Monotributo',
+        detalle: 'Constancia de Opción / Inscripción actualizada ARCA',
+        estado: 'Enviado',
+        observaciones: 'Constancia vigente remitida por GR Estudio: https://drive.google.com/file/d/demo-constancia-arca-2026/view'
+      },
+      {
+        id: 'SOL-2026-03',
+        cuit: '20345678904',
+        fecha: '2026-11-22',
+        tipo: 'Factura C',
+        detalle: 'Solicitud Factura C — Bodega Valle Calchaquí S.R.L. ($ 950.000,00)',
+        estado: 'En proceso',
+        observaciones: 'Recibida por el estudio para revisión previa a emisión en ARCA.'
+      }
+    ]
   };
 }

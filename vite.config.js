@@ -11,6 +11,7 @@ export default defineConfig({
         'logo-gr.png',
         'favicon.svg',
         'apple-touch-icon.png',
+        'push-sw.js',
         'icons/icon-192.png',
         'icons/icon-512.png',
         'icons/maskable-icon-512.png'
@@ -48,6 +49,7 @@ export default defineConfig({
         ]
       },
       workbox: {
+        importScripts: ['/push-sw.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
