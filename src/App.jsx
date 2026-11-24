@@ -37,7 +37,7 @@ import FacturarTab from './components/FacturarTab.jsx';
 import HistorialTab from './components/HistorialTab.jsx';
 import InicioTab from './components/InicioTab.jsx';
 import LoginScreen from './components/LoginScreen.jsx';
-import MiInformeTab from './components/MiInformeTab.jsx';
+import SimuladorTab from './components/SimuladorTab.jsx';
 import PrivacyPolicyModal, {
   PRIVACY_CONSENT_STORAGE_KEY,
   PRIVACY_POLICY_VERSION
@@ -87,10 +87,6 @@ export default function App() {
   const [cargando, setCargando] = useState(false);
   const [errorLogin, setErrorLogin] = useState('');
   const [notificacion, setNotificacion] = useState(null);
-
-  // Estado del simulador en Mi Informe
-  const [montoSimuladoVentas, setMontoSimuladoVentas] = useState(0);
-  const [montoSimuladoCompras, setMontoSimuladoCompras] = useState(0);
 
   // Modal Modo Estudio (compatibilidad con contador)
   const [modalEstudio, setModalEstudio] = useState(false);
@@ -255,9 +251,10 @@ export default function App() {
 
   const clienteActual = portalData?.cliente || null;
 
-  const calculos = useMemo(() => {
-    return calcularEstadoMonotributo(clienteActual, montoSimuladoVentas, montoSimuladoCompras);
-  }, [clienteActual, montoSimuladoVentas, montoSimuladoCompras]);
+  // Cálculos 100% REALES (nunca reciben ni mezclan montos del Simulador)
+  const calculosReales = useMemo(() => {
+    return calcularEstadoMonotributo(clienteActual, 0, 0);
+  }, [clienteActual]);
 
   const alertasNoLeidas = useMemo(
     () => (portalData?.alertasArca || []).filter((a) => !a.leida).length,
@@ -268,8 +265,6 @@ export default function App() {
     eliminarStorageSeguro(SESSION_KEY);
     setSesion(null);
     setPortalData(null);
-    setMontoSimuladoVentas(0);
-    setMontoSimuladoCompras(0);
     setTabActiva('inicio');
     setErrorLogin('');
     mostrarToast('Sesión cerrada correctamente.');
@@ -457,8 +452,6 @@ export default function App() {
                     onClick={() => {
                       const limpio = resetearDatosDemo();
                       setPortalData(limpio);
-                      setMontoSimuladoVentas(0);
-                      setMontoSimuladoCompras(0);
                       mostrarToast('Datos demo restaurados.');
                     }}
                     title="Restaurar datos demo iniciales"
@@ -536,11 +529,16 @@ export default function App() {
             {tabActiva === 'inicio' && (
               <InicioTab
                 cliente={clienteActual}
-                calculos={calculos}
+                calculos={calculosReales}
                 alertasArca={portalData?.alertasArca || []}
+                actualizando={cargando}
+                onActualizarInforme={handleRefrescar}
                 onSolicitarVep={handleSolicitarVep}
                 onSolicitarConstancia={handleSolicitarConstancia}
-                onIrAInforme={() => setTabActiva('informe')}
+                onIrASimulador={() => {
+                  setTabActiva('simulador');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
                 onToast={mostrarToast}
               />
             )}
@@ -574,17 +572,8 @@ export default function App() {
               />
             )}
 
-            {tabActiva === 'informe' && (
-              <MiInformeTab
-                cliente={clienteActual}
-                calculos={calculos}
-                montoSimuladoVentas={montoSimuladoVentas}
-                setMontoSimuladoVentas={setMontoSimuladoVentas}
-                montoSimuladoCompras={montoSimuladoCompras}
-                setMontoSimuladoCompras={setMontoSimuladoCompras}
-                actualizando={cargando}
-                onActualizarInforme={handleRefrescar}
-              />
+            {tabActiva === 'simulador' && (
+              <SimuladorTab key={clienteActual.CUIT} cliente={clienteActual} />
             )}
 
             {/* PIE LEGAL Y ACCESO BIOMÉTRICO EN APP LOGUEADA */}

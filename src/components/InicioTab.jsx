@@ -1,21 +1,30 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   Bell,
   Briefcase,
+  Calculator,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Download,
   FileBadge2,
+  PieChart,
   Receipt,
   RefreshCw,
   Send,
   Share2,
   ShieldAlert,
+  ShoppingBag,
   X
 } from 'lucide-react';
+import {
+  FACTOR_IPC,
+  TOPE_CATEGORIA_K_VIGENTE,
+  TOPE_MAXIMO_ANUAL
+} from '../data/escalasMonotributo.js';
 import {
   formatARS,
   formatCUIT,
@@ -28,6 +37,7 @@ import {
   generarPdfConstancia,
   generarPdfVep
 } from '../utils/documentHelpers.js';
+import { BarComparativaChart, DoughnutMedidorIndividual } from './ChartsMonotributo.jsx';
 import InstallPwaBanner from './InstallPwaBanner.jsx';
 
 const IMPUESTOS_VEP = [
@@ -43,14 +53,46 @@ export default function InicioTab({
   cliente,
   calculos,
   alertasArca = [],
+  actualizando = false,
+  onActualizarInforme,
   onSolicitarVep,
   onSolicitarConstancia,
-  onIrAInforme,
+  onIrASimulador,
   onToast
 }) {
+  const informeRealRef = useRef(null);
   const [modalVep, setModalVep] = useState(false);
   const [modalConstancia, setModalConstancia] = useState(false);
   const [alertaExpandida, setAlertaExpandida] = useState(null);
+
+  const irAlInformeReal = () => {
+    informeRealRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // Colores e indicadores 100% reales e independientes (Ventas vs. Compras Art. 20)
+  const superaVentasCatActual = calculos.ventasTotales > calculos.topeCat;
+  const precaucionVentas = !superaVentasCatActual && calculos.porcentaje >= 80;
+  const colorVentasHex = superaVentasCatActual
+    ? '#dc2626'
+    : precaucionVentas
+      ? '#d97706'
+      : '#0F4C5C';
+  const badgeVentas = superaVentasCatActual
+    ? { texto: 'Supera tope', cls: 'bg-red-100 text-red-800 border-red-200' }
+    : precaucionVentas
+      ? { texto: 'Precaución ≥80%', cls: 'bg-amber-100 text-amber-900 border-amber-200' }
+      : { texto: 'En regla', cls: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
+
+  const colorGastosHex = calculos.alertaExclusionGastos
+    ? '#dc2626'
+    : calculos.alertaPrecaucionGastos
+      ? '#d97706'
+      : '#16a34a';
+  const badgeGastos = calculos.alertaExclusionGastos
+    ? { texto: 'Exclusión Art. 20', cls: 'bg-red-100 text-red-800 border-red-200' }
+    : calculos.alertaPrecaucionGastos
+      ? { texto: 'Alerta ≥75%', cls: 'bg-amber-100 text-amber-900 border-amber-200' }
+      : { texto: 'Dentro del tope', cls: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
 
   // Estado formulario Nuevo VEP
   const [vepImpuesto, setVepImpuesto] = useState('Monotributo');
@@ -193,25 +235,43 @@ export default function InicioTab({
           </div>
         </div>
 
-        {/* Semáforo general */}
-        <div className="p-4 flex items-center justify-between gap-3 bg-white">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className={`w-3.5 h-3.5 rounded-full shrink-0 ${semaforo.dot} ring-4 ring-slate-100`} />
-            <div className="min-w-0">
-              <p className="text-xs font-extrabold text-slate-800 truncate">{semaforo.texto}</p>
-              <p className="text-[11px] text-slate-500 truncate">
-                Ventas {calculos.porcentaje.toFixed(1)}% Cat. {cliente.Categoria_Actual} • Compras Art. 20: {calculos.porcentajeComprasArt20.toFixed(1)}%
-              </p>
+        {/* Semáforo general (100% datos reales) */}
+        <div className="p-4 space-y-2.5 bg-white">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className={`w-3.5 h-3.5 rounded-full shrink-0 ${semaforo.dot} ring-4 ring-slate-100`} />
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold text-slate-800 truncate">{semaforo.texto}</p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  Ventas {calculos.porcentaje.toFixed(1)}% Cat. {cliente.Categoria_Actual} • Compras Art. 20: {calculos.porcentajeComprasArt20.toFixed(1)}%
+                </p>
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={irAlInformeReal}
+              className={`text-[11px] font-extrabold px-3 py-1.5 rounded-xl border shrink-0 transition active:scale-95 ${semaforo.pill}`}
+            >
+              Ver detalle
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={onIrAInforme}
-            className={`text-[11px] font-extrabold px-3 py-1.5 rounded-xl border shrink-0 transition active:scale-95 ${semaforo.pill}`}
-          >
-            Ver detalle
-          </button>
+          {onIrASimulador && (
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-500 font-medium">
+                ¿Querés probar escenarios sin afectar tus datos reales?
+              </span>
+              <button
+                type="button"
+                onClick={onIrASimulador}
+                className="inline-flex items-center gap-1 text-[11px] font-extrabold text-petroleo hover:text-ladrillo shrink-0 transition"
+              >
+                <Calculator className="w-3.5 h-3.5" />
+                <span>Probar en Simulador</span>
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -365,6 +425,456 @@ export default function InicioTab({
           </div>
         )}
       </section>
+
+      {/* ====================================================================
+          5. MI INFORME REAL (ÚLTIMOS 12 MESES — 100% DATOS REALES)
+         ==================================================================== */}
+      <div ref={informeRealRef} className="space-y-4 pt-2 scroll-mt-20">
+        <div className="flex items-center justify-between gap-2 px-1">
+          <div>
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-ladrillo block">
+              Estado real registrado
+            </span>
+            <h3 className="text-base sm:text-lg font-black text-petroleo leading-tight">
+              Mi Informe (Últimos 12 meses)
+            </h3>
+            <p className="text-[11px] text-slate-500">
+              Datos reales de planilla • Escalas ARCA (Factor IPC {FACTOR_IPC})
+            </p>
+          </div>
+          {onActualizarInforme && (
+            <button
+              type="button"
+              disabled={actualizando}
+              onClick={onActualizarInforme}
+              className="inline-flex items-center gap-1.5 bg-petroleo hover:bg-petroleo-dark disabled:opacity-60 text-white text-xs font-extrabold px-3.5 py-2.5 rounded-xl shadow-sm transition active:scale-95 shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${actualizando ? 'animate-spin' : ''}`} />
+              <span>{actualizando ? 'Actualizando...' : 'Actualizar Informe'}</span>
+            </button>
+          )}
+        </div>
+
+        {/* ALERTA CRÍTICA REAL ART. 20 (SOLO SI LOS DATOS REALES SUPERAN 100%) */}
+        {calculos.alertaExclusionGastos && (
+          <div className="bg-red-600 text-white rounded-3xl p-4 shadow-lg border-2 border-red-300 space-y-2 animate-pulse-alert">
+            <div className="flex items-start gap-3">
+              <ShieldAlert className="w-6 h-6 text-hueso shrink-0 mt-0.5" />
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-widest bg-red-900/70 px-2 py-0.5 rounded text-hueso">
+                  Art. 20 Ley Monotributo • {calculos.porcentajeComprasArt20.toFixed(1)}% del Tope Cat. K
+                </span>
+                <p className="text-xs sm:text-sm font-extrabold mt-1 leading-snug">
+                  RIESGO DE EXCLUSIÓN: Tus compras/gastos reales ({formatARS(calculos.comprasTotales)}) superan en{' '}
+                  {formatARS(calculos.excesoGastosArt20)} el límite del {calculos.porcLimiteTexto} sobre la Categoría K ({formatARS(calculos.limiteComprasArt20CatK)}).
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ALERTA PREVENTIVA REAL ART. 20 (SOLO SI DATOS REALES ≥ 75%) */}
+        {calculos.alertaPrecaucionGastos && (
+          <div className="bg-amber-50 border-2 border-amber-400 text-amber-950 rounded-3xl p-4 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs space-y-0.5">
+              <p className="font-black uppercase text-amber-800">
+                Alerta Preventiva Art. 20 (≥ 75% de Categoría K)
+              </p>
+              <p className="font-semibold leading-snug">
+                Llevás consumido el <strong>{calculos.porcentajeComprasArt20.toFixed(1)}%</strong> de tu límite anual real de compras ({calculos.porcLimiteTexto} sobre Cat. K: {formatARS(calculos.limiteComprasArt20CatK)}). Margen restante: <strong>{formatARS(calculos.margenGastosDisponible)}</strong>.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* PANEL REAL 12M: KPIs + BARRAS DE PROGRESO CAT. ACTUAL Y CAT. K */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700">
+                Datos reales (Últimos 12 meses)
+              </span>
+              <h4 className="text-base font-black text-petroleo">
+                Categoría {cliente.Categoria_Actual} • {cliente.Actividad}
+              </h4>
+            </div>
+            <span className={`text-[11px] font-extrabold px-2.5 py-1 rounded-full border ${calculos.bgBadge}`}>
+              {calculos.tituloEstado}
+            </span>
+          </div>
+
+          <div className={`p-3.5 rounded-2xl border-l-4 text-xs font-bold leading-relaxed ${calculos.bgBanner}`}>
+            {calculos.mensajeSemaforo}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-petroleo-50/80 p-3.5 rounded-2xl border border-petroleo/20">
+              <span className="text-[10px] font-extrabold uppercase text-petroleo block">Facturación 12M</span>
+              <p className="text-base sm:text-lg font-black text-petroleo mt-0.5 whitespace-nowrap tabular-nums">
+                {formatARS(calculos.ventasTotales)}
+              </p>
+              <span className="text-[11px] font-bold text-slate-600">
+                {calculos.porcentaje.toFixed(1)}% de Cat. {cliente.Categoria_Actual}
+              </span>
+            </div>
+
+            <div
+              className={`p-3.5 rounded-2xl border ${
+                calculos.alertaExclusionGastos
+                  ? 'bg-red-50 border-red-300'
+                  : calculos.alertaPrecaucionGastos
+                    ? 'bg-amber-50 border-amber-300'
+                    : 'bg-ladrillo-50 border-ladrillo/25'
+              }`}
+            >
+              <span className="text-[10px] font-extrabold uppercase text-ladrillo-dark block">Compras / Gastos 12M</span>
+              <p
+                className={`text-base sm:text-lg font-black mt-0.5 whitespace-nowrap tabular-nums ${
+                  calculos.alertaExclusionGastos ? 'text-red-700' : 'text-ladrillo'
+                }`}
+              >
+                {formatARS(calculos.comprasTotales)}
+              </p>
+              <span className="text-[11px] font-bold text-slate-600">
+                {calculos.porcentajeComprasArt20.toFixed(1)}% del lím. Cat. K
+              </span>
+            </div>
+          </div>
+
+          {/* Barra 1: Tope Categoría Actual */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-bold gap-2">
+              <span className="text-petroleo">Tope Categoría {cliente.Categoria_Actual} (c/ IPC)</span>
+              <span className="text-slate-700 whitespace-nowrap tabular-nums">{formatARS(calculos.topeCat)}</span>
+            </div>
+            <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+              <div
+                className={`h-full transition-all duration-500 rounded-full ${
+                  superaVentasCatActual
+                    ? 'bg-red-600'
+                    : precaucionVentas
+                      ? 'bg-amber-500'
+                      : 'bg-petroleo'
+                }`}
+                style={{ width: `${Math.min(100, calculos.porcentaje)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[11px] text-slate-500 font-semibold">
+              <span>Consumido: {calculos.porcentaje.toFixed(1)}%</span>
+              <span className="whitespace-nowrap tabular-nums">
+                {superaVentasCatActual
+                  ? `Exceso: ${formatARS(calculos.excesoCategoria)}`
+                  : `Margen: ${formatARS(calculos.margenDisponible)}`}
+              </span>
+            </div>
+          </div>
+
+          {/* Barra 2: Tope Máximo Categoría K */}
+          <div className="space-y-1.5 pt-1 border-t border-slate-100">
+            <div className="flex items-center justify-between text-xs font-bold gap-2">
+              <span className="text-slate-700">Progreso frente a Categoría K (Tope Máximo)</span>
+              <span className="text-slate-700 whitespace-nowrap tabular-nums">{formatARS(TOPE_MAXIMO_ANUAL)}</span>
+            </div>
+            <div className="w-full h-3.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+              <div
+                className={`h-full transition-all duration-500 rounded-full ${
+                  calculos.superaMaximoMonotributo ? 'bg-red-600' : 'bg-petroleo-light'
+                }`}
+                style={{ width: `${Math.min(100, calculos.porcentajeSobreCatK)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[11px] text-slate-500 font-semibold">
+              <span>{calculos.porcentajeSobreCatK.toFixed(1)}% del máximo Monotributo</span>
+              <span className="whitespace-nowrap tabular-nums">Margen hasta K: {formatARS(calculos.margenHastaCatK)}</span>
+            </div>
+          </div>
+        </section>
+
+        {/* REGLA ART. 20 REAL SOBRE CATEGORÍA K */}
+        <section
+          className={`bg-white rounded-3xl shadow-sm p-4 sm:p-5 space-y-3.5 border ${
+            calculos.alertaExclusionGastos
+              ? 'border-red-400 ring-2 ring-red-500/20'
+              : calculos.alertaPrecaucionGastos
+                ? 'border-amber-400'
+                : 'border-slate-200/80'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-ladrillo inline-flex items-center gap-1">
+                <ShoppingBag className="w-3.5 h-3.5" />
+                Regla de Exclusión Art. 20
+              </span>
+              <h4 className="text-sm sm:text-base font-black text-petroleo mt-0.5">
+                Tope Compras y Gastos: {calculos.porcLimiteTexto} sobre Categoría K
+              </h4>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded-full text-[11px] font-black border shrink-0 ${
+                calculos.alertaExclusionGastos
+                  ? 'bg-red-100 text-red-800 border-red-300'
+                  : calculos.alertaPrecaucionGastos
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : 'bg-emerald-100 text-emerald-800 border-emerald-300'
+              }`}
+            >
+              {calculos.porcentajeComprasArt20.toFixed(1)}%
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Para <strong>{cliente.Actividad}</strong> el tope de compras/gastos se calcula{' '}
+            <strong>siempre sobre el tope anual de Categoría K</strong> ({formatARS(TOPE_CATEGORIA_K_VIGENTE)}):{' '}
+            <strong className="text-petroleo">{formatARS(calculos.limiteComprasArt20CatK)}</strong> ({calculos.porcLimiteTexto}).
+            Alerta preventiva al <strong>75%</strong> y crítica al <strong>100%</strong>.
+          </p>
+
+          <div className="bg-[#F8FAFC] p-3.5 rounded-2xl border border-slate-200 space-y-2">
+            <div className="relative pt-5 pb-1">
+              <div
+                className="absolute top-0 -translate-x-1/2 z-20 flex flex-col items-center"
+                style={{ left: '75%' }}
+              >
+                <span className="bg-amber-500 text-slate-950 text-[9px] font-black px-1.5 py-0.5 rounded shadow whitespace-nowrap">
+                  ALERTA 75%
+                </span>
+              </div>
+              <div className="w-full h-6 bg-petroleo/10 rounded-xl overflow-hidden relative border border-petroleo/25">
+                <div
+                  className={`h-full transition-all duration-500 flex items-center justify-end pr-2 text-[11px] font-black text-white ${
+                    calculos.alertaExclusionGastos
+                      ? 'bg-red-600'
+                      : calculos.alertaPrecaucionGastos
+                        ? 'bg-amber-500'
+                        : 'bg-ladrillo'
+                  }`}
+                  style={{ width: `${Math.min(100, calculos.porcentajeComprasArt20)}%` }}
+                >
+                  {calculos.porcentajeComprasArt20 >= 12 && `${calculos.porcentajeComprasArt20.toFixed(1)}%`}
+                </div>
+              </div>
+              <div className="absolute top-4 bottom-0 w-0.5 bg-amber-500 z-10" style={{ left: '75%' }} />
+            </div>
+
+            <div className="flex justify-between text-[11px] font-bold">
+              <span className="text-ladrillo whitespace-nowrap tabular-nums">
+                Acumulado: {formatARS(calculos.comprasTotales)}
+              </span>
+              <span className={`whitespace-nowrap tabular-nums ${calculos.alertaExclusionGastos ? 'text-red-700' : 'text-emerald-800'}`}>
+                {calculos.alertaExclusionGastos
+                  ? `Excedente: ${formatARS(calculos.excesoGastosArt20)}`
+                  : `Margen: ${formatARS(calculos.margenGastosDisponible)}`}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        {/* SEMÁFORO DE MONOTRIBUTO REAL — DOS INDICADORES INDEPENDIENTES */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[10px] font-extrabold uppercase text-ladrillo inline-flex items-center gap-1">
+                <PieChart className="w-3.5 h-3.5" />
+                Semáforo Real de Monotributo
+              </span>
+              <h4 className="text-sm sm:text-base font-black text-petroleo">
+                Control independiente: Ventas vs. Gastos Art. 20
+              </h4>
+            </div>
+            <div className="flex items-center gap-1.5 bg-slate-900 px-2.5 py-1.5 rounded-xl shrink-0">
+              <span className={`w-3 h-3 rounded-full ${calculos.estado === 'VERDE' ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-emerald-950 opacity-40'}`} />
+              <span className={`w-3 h-3 rounded-full ${calculos.estado === 'AMARILLO' ? 'bg-amber-400 shadow-[0_0_6px_#fbbf24]' : 'bg-amber-950 opacity-40'}`} />
+              <span className={`w-3 h-3 rounded-full ${calculos.estado === 'ROJO' ? 'bg-red-500 shadow-[0_0_6px_#ef4444]' : 'bg-red-950 opacity-40'}`} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 items-stretch">
+            <div
+              className={`flex flex-col h-full rounded-2xl p-3.5 border gap-2.5 ${
+                superaVentasCatActual
+                  ? 'bg-red-50/40 border-red-200'
+                  : precaucionVentas
+                    ? 'bg-amber-50/40 border-amber-200'
+                    : 'bg-[#F8FAFC] border-slate-200'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2 sm:min-h-[68px]">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-petroleo block">
+                    INDICADOR 1 · VENTAS
+                  </span>
+                  <h5 className="text-sm font-black text-slate-900 leading-snug mt-0.5">
+                    Ingresos (Cat. {cliente.Categoria_Actual})
+                  </h5>
+                </div>
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${badgeVentas.cls}`}>
+                  {badgeVentas.texto}
+                </span>
+              </div>
+
+              <DoughnutMedidorIndividual
+                porcentaje={calculos.porcentaje}
+                colorHex={colorVentasHex}
+                etiquetaCentro={`Ventas Cat. ${cliente.Categoria_Actual}`}
+                subetiquetaCentro="Tope c/ IPC"
+                labelConsumido="% Ventas Cat. actual"
+                labelRestante="% Margen ventas"
+              />
+
+              <div className="mt-auto space-y-1.5 text-[11px] bg-white rounded-xl p-2.5 border border-slate-200/80">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-semibold truncate">Facturado 12m:</span>
+                  <strong className="text-petroleo font-black whitespace-nowrap tabular-nums shrink-0">
+                    {formatARS(calculos.ventasTotales)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-semibold truncate">Tope Cat. {cliente.Categoria_Actual}:</span>
+                  <strong className="text-slate-800 whitespace-nowrap tabular-nums shrink-0">
+                    {formatARS(calculos.topeCat)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                  <span className="font-bold text-slate-700 truncate">
+                    {superaVentasCatActual ? 'Excedente:' : 'Margen ventas:'}
+                  </span>
+                  <strong
+                    className={`whitespace-nowrap tabular-nums shrink-0 ${
+                      superaVentasCatActual ? 'text-red-700 font-black' : 'text-emerald-700 font-black'
+                    }`}
+                  >
+                    {superaVentasCatActual
+                      ? `-${formatARS(calculos.excesoCategoria)}`
+                      : formatARS(calculos.margenDisponible)}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={`flex flex-col h-full rounded-2xl p-3.5 border gap-2.5 ${
+                calculos.alertaExclusionGastos
+                  ? 'bg-red-50/60 border-red-300'
+                  : calculos.alertaPrecaucionGastos
+                    ? 'bg-amber-50/50 border-amber-300'
+                    : 'bg-[#F8FAFC] border-slate-200'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2 sm:min-h-[68px]">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-ladrillo block">
+                    INDICADOR 2 · ART. 20
+                  </span>
+                  <h5 className="text-sm font-black text-slate-900 leading-snug mt-0.5">
+                    Gastos ({calculos.porcLimiteTexto} Cat. K)
+                  </h5>
+                  <span className="text-[10px] font-semibold text-slate-500 block">
+                    {calculos.esVentaBienes ? 'Venta de Bienes' : 'Servicios'}
+                  </span>
+                </div>
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${badgeGastos.cls}`}>
+                  {badgeGastos.texto}
+                </span>
+              </div>
+
+              <DoughnutMedidorIndividual
+                porcentaje={calculos.porcentajeComprasArt20}
+                colorHex={colorGastosHex}
+                etiquetaCentro={`Art. 20 (${calculos.porcLimiteTexto})`}
+                subetiquetaCentro={calculos.esVentaBienes ? 'Cat. K · Bienes' : 'Cat. K · Servicios'}
+                labelConsumido="% Gastos s/ Cat. K"
+                labelRestante="% Margen gastos"
+              />
+
+              <div className="mt-auto space-y-1.5 text-[11px] bg-white rounded-xl p-2.5 border border-slate-200/80">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-semibold truncate">Gastos totales:</span>
+                  <strong className="text-ladrillo font-black whitespace-nowrap tabular-nums shrink-0">
+                    {formatARS(calculos.comprasTotales)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-semibold truncate">Tope {calculos.porcLimiteTexto} Cat. K:</span>
+                  <strong className="text-slate-800 whitespace-nowrap tabular-nums shrink-0">
+                    {formatARS(calculos.limiteComprasArt20CatK)}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                  <span
+                    className={`font-bold truncate ${
+                      calculos.alertaExclusionGastos ? 'text-red-700' : 'text-slate-700'
+                    }`}
+                  >
+                    {calculos.alertaExclusionGastos ? 'Excedente:' : 'Margen disponible:'}
+                  </span>
+                  <strong
+                    className={`whitespace-nowrap tabular-nums shrink-0 ${
+                      calculos.alertaExclusionGastos
+                        ? 'text-red-700 font-black bg-red-100 px-1.5 py-0.5 rounded'
+                        : 'text-emerald-700 font-black'
+                    }`}
+                  >
+                    {calculos.alertaExclusionGastos
+                      ? `-${formatARS(calculos.excesoGastosArt20)}`
+                      : formatARS(calculos.margenGastosDisponible)}
+                  </strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* COMPARATIVA ANUAL REAL */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3">
+          <div>
+            <span className="text-[10px] font-extrabold uppercase text-ladrillo inline-flex items-center gap-1">
+              <BarChart3 className="w-3.5 h-3.5" />
+              Comparativa Real Anual
+            </span>
+            <h4 className="text-sm font-black text-petroleo">
+              Ventas vs. Compras y Límite {calculos.porcLimiteTexto} (Cat. K)
+            </h4>
+          </div>
+
+          <BarComparativaChart
+            ventasTotales={calculos.ventasTotales}
+            comprasTotales={calculos.comprasTotales}
+            limiteComprasAnual={calculos.limiteComprasArt20CatK}
+            porcLimiteTexto={calculos.porcLimiteTexto}
+          />
+        </section>
+
+        {/* RECOMENDACIONES + ACCESO OPCIONAL AL SIMULADOR */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3">
+          <h4 className="text-xs font-extrabold uppercase tracking-wider text-petroleo">
+            Recomendaciones de GR Estudio
+          </h4>
+          <ul className="space-y-2">
+            {calculos.recomendaciones.map((rec, idx) => (
+              <li
+                key={idx}
+                className="flex items-start gap-2.5 bg-[#F8FAFC] p-3 rounded-2xl border border-slate-200/80 text-xs text-slate-700 font-medium leading-relaxed"
+              >
+                <CheckCircle2 className="w-4 h-4 text-petroleo shrink-0 mt-0.5" />
+                <span>{rec}</span>
+              </li>
+            ))}
+          </ul>
+
+          {onIrASimulador && (
+            <button
+              type="button"
+              onClick={onIrASimulador}
+              className="w-full py-3 px-4 rounded-2xl bg-petroleo-50 hover:bg-petroleo-100 text-petroleo font-extrabold text-xs border border-petroleo/20 flex items-center justify-center gap-2 transition"
+            >
+              <Calculator className="w-4 h-4 text-ladrillo" />
+              <span>Probar escenarios en el Simulador</span>
+            </button>
+          )}
+        </section>
+      </div>
 
       {/* ====================================================================
           MODAL: PEDIR / DESCARGAR VEP

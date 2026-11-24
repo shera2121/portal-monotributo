@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, Clock, FileText, Home, Plus } from 'lucide-react';
+import { Calculator, Clock, FileText, Home, Plus } from 'lucide-react';
 
 export default function BottomNav({ tabActiva, onChangeTab, badgeAlertas = 0 }) {
   const NavBtn = ({ id, label, IconComp, badge = 0 }) => {
@@ -62,7 +62,7 @@ export default function BottomNav({ tabActiva, onChangeTab, badgeAlertas = 0 }) 
           </div>
 
           <NavBtn id="historial" label="Historial" IconComp={Clock} />
-          <NavBtn id="informe" label="Mi Informe" IconComp={BarChart3} />
+          <NavBtn id="simulador" label="Simulador" IconComp={Calculator} />
         </div>
       </div>
     </nav>
