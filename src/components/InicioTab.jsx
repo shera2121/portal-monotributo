@@ -566,7 +566,7 @@ export default function InicioTab({
                         className="py-3.5 px-3 rounded-2xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-2 transition active:scale-[0.98]"
                       >
                         <Download className="w-4 h-4 shrink-0" />
-                        <span>Descargar PDF</span>
+                        <span>Ver / Descargar PDF</span>
                       </button>
                       <button
                         type="button"

@@ -3,13 +3,23 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Download,
   FileCheck2,
   FileMinus2,
   FilePlus2,
+  Fingerprint,
+  Share2,
   ShieldCheck,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import { ARCA_DIRECT_MODE, TOPE_CONSUMIDOR_FINAL } from '../config.js';
+import { verificarBiometriaParaEmision } from '../utils/biometricAuth.js';
+import {
+  compartirDocumento,
+  descargarBlob,
+  generarPdfComprobante
+} from '../utils/documentHelpers.js';
 import {
   formatARS,
   formatFechaAR,
@@ -28,8 +38,30 @@ const CONDICIONES_VENTA = [
   'Cuenta Corriente'
 ];
 
-export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
+function obtenerUrlPdfVenta(v = {}) {
+  const directa = String(
+    v.pdfUrl || v.urlPdf || v.enlacePdf || v.linkPdf || v.archivoUrl || v.url || ''
+  ).trim();
+  if (directa && /^https?:\/\//i.test(directa)) return directa;
+  const obs = String(v.observaciones || v.Observaciones || v.observacion || '');
+  const match = obs.match(/https?:\/\/[^\s"'<>]+/i);
+  return match ? match[0].replace(/[.,;)\]]+$/, '') : '';
+}
+
+export default function FacturarTab({
+  cliente = null,
+  ventas = [],
+  sesionPin = '',
+  onSolicitarFactura,
+  onToast
+}) {
   const rangoMes = useMemo(() => getRangoMesActual(), []);
+
+  const esModoAutomatico = Boolean(
+    ARCA_DIRECT_MODE ||
+      cliente?.facturacionAutomatica ||
+      /auto|direct/i.test(String(cliente?.Modo_Facturacion || ''))
+  );
 
   const [tipoComprobante, setTipoComprobante] = useState('Factura C');
   const [facturaAsociada, setFacturaAsociada] = useState('');
@@ -46,6 +78,10 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
   const [errorForm, setErrorForm] = useState('');
   const [avisoVoz, setAvisoVoz] = useState('');
   const [modalConfirmacion, setModalConfirmacion] = useState(false);
+  const [errorModal, setErrorModal] = useState('');
+  const [pinConfirmacionManual, setPinConfirmacionManual] = useState('');
+  const [pedirPinFallback, setPedirPinFallback] = useState(false);
+  const [verificandoBio, setVerificandoBio] = useState(false);
   const [enviando, setEnviando] = useState(false);
 
   const handleDictadoFactura = (transcript) => {
@@ -106,10 +142,99 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
       return;
     }
 
+    setErrorModal('');
+    setPedirPinFallback(false);
+    setPinConfirmacionManual('');
     setModalConfirmacion(true);
   };
 
+  const handleVerDescargarPdfVenta = (v) => {
+    const pdfUrl = obtenerUrlPdfVenta(v);
+    if (pdfUrl && !pdfUrl.includes('/demo-')) {
+      window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+      onToast?.('Abriendo PDF del comprobante...');
+      return;
+    }
+    const blob = generarPdfComprobante(v, 'ventas', cliente);
+    const nombre = `${String(v.tipoComprobante || 'Factura_C').replace(/\s+/g, '_')}_${v.numeroComprobante || v.id}.pdf`;
+    descargarBlob(blob, nombre);
+    onToast?.('PDF del comprobante descargado.');
+  };
+
+  const handleCompartirPdfVenta = async (v) => {
+    const pdfUrl = obtenerUrlPdfVenta(v);
+    const esUrlReal = Boolean(pdfUrl && !pdfUrl.includes('/demo-'));
+    const blob = esUrlReal ? null : generarPdfComprobante(v, 'ventas', cliente);
+    const titulo = `${v.tipoComprobante || 'Factura C'} ${v.numeroComprobante || ''}`.trim();
+    const texto = `${titulo} • Fecha: ${formatFechaAR(v.fecha)} • Importe: ${formatARS(v.importe)}${v.cae ? ` • CAE: ${v.cae}` : ''}`;
+
+    const res = await compartirDocumento({
+      titulo,
+      texto,
+      url: esUrlReal ? pdfUrl : undefined,
+      blob,
+      nombreArchivo: `${titulo.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`
+    });
+    if (res.shared) {
+      onToast?.(
+        res.method === 'clipboard-fallback'
+          ? 'Enlace del PDF copiado para compartir.'
+          : res.method === 'download-fallback'
+            ? 'PDF descargado para compartir.'
+            : 'Comprobante listo para compartir.'
+      );
+    }
+  };
+
   const handleConfirmarEnvio = async () => {
+    setErrorModal('');
+
+    // En Modo Automático se exige verificación biométrica (huella / rostro / PIN celular) antes de emitir
+    let verificadoBiometricamente = false;
+    if (esModoAutomatico) {
+      if (pedirPinFallback) {
+        if (!pinConfirmacionManual.trim() || (sesionPin && pinConfirmacionManual.trim() !== String(sesionPin).trim())) {
+          setErrorModal('El PIN ingresado no coincide con tu PIN de acceso. No se emitió la factura.');
+          return;
+        }
+        verificadoBiometricamente = true;
+      } else {
+        setVerificandoBio(true);
+        try {
+          const bioRes = await verificarBiometriaParaEmision({
+            cuit: cliente?.CUIT || '',
+            pin: sesionPin || '',
+            nombre: cliente?.Cliente || ''
+          });
+          if (bioRes?.fallbackPinRequerido) {
+            setPedirPinFallback(true);
+            setErrorModal(
+              'Este dispositivo no tiene biometría activa. Confirmá con tu PIN de acceso para emitir en Modo Automático.'
+            );
+            setVerificandoBio(false);
+            return;
+          }
+          if (!bioRes?.ok || !bioRes?.verified) {
+            setErrorModal(
+              'No se pudo validar tu huella o PIN biométrico. La emisión automática fue cancelada por seguridad.'
+            );
+            setVerificandoBio(false);
+            return;
+          }
+          verificadoBiometricamente = true;
+        } catch (err) {
+          setErrorModal(
+            err?.message ||
+              'No se pudo validar la huella o el PIN del celular. La emisión automática fue cancelada.'
+          );
+          setVerificandoBio(false);
+          return;
+        } finally {
+          setVerificandoBio(false);
+        }
+      }
+    }
+
     setEnviando(true);
     try {
       await onSolicitarFactura({
@@ -129,12 +254,16 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
         descripcion: descripcion.trim(),
         importe: importeNum,
         estado: 'Solicitada',
-        arcaDirectMode: ARCA_DIRECT_MODE
+        arcaDirectMode: esModoAutomatico,
+        modoFacturacion: esModoAutomatico ? 'Automatico' : 'Manual',
+        verificacionBiometrica: verificadoBiometricamente
       });
       setModalConfirmacion(false);
       setDescripcion('');
       setImporteStr('');
       setFacturaAsociada('');
+      setPinConfirmacionManual('');
+      setPedirPinFallback(false);
       if (receptorTipo === 'CUIT / DNI específico') {
         setReceptorDocumento('');
         setReceptorNombre('');
@@ -148,11 +277,23 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
     <div className="space-y-4">
       {/* Cabecera */}
       <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
-        <div>
-          <h2 className="text-lg font-black text-petroleo leading-tight">Solicitar Comprobante</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Tu solicitud ingresa al estudio para revisión y emisión segura en ARCA.
-          </p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-black text-petroleo leading-tight">
+              {esModoAutomatico ? 'Emitir Comprobante ARCA' : 'Solicitar Comprobante'}
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {esModoAutomatico
+                ? 'Modo Automático activo: te pediremos tu huella o PIN biométrico antes de emitir.'
+                : 'Tu solicitud ingresa al estudio para revisión y emisión segura en ARCA.'}
+            </p>
+          </div>
+          {esModoAutomatico && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-emerald-100 text-emerald-900 border border-emerald-300 px-2.5 py-1 rounded-full shrink-0">
+              <Zap className="w-3 h-3" />
+              Automático
+            </span>
+          )}
         </div>
 
         {/* DICTADO INTELIGENTE POR VOZ (es-AR) */}
@@ -479,6 +620,27 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
                     </span>
                     <strong className="text-sm font-black text-slate-900">{formatARS(v.importe)}</strong>
                   </div>
+
+                  {emitida && (
+                    <div className="grid grid-cols-2 gap-2 pt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleVerDescargarPdfVenta(v)}
+                        className="py-2.5 px-3 rounded-xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                      >
+                        <Download className="w-3.5 h-3.5 shrink-0" />
+                        <span>Ver / Descargar PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCompartirPdfVenta(v)}
+                        className="py-2.5 px-3 rounded-xl bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                      >
+                        <Share2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Compartir</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -505,12 +667,54 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
             </div>
 
             <div className="p-5 space-y-4">
-              <div className="bg-hueso/80 border border-hueso-border rounded-2xl p-3 flex items-start gap-2.5 text-xs text-petroleo">
-                <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
+              <div
+                className={`rounded-2xl p-3 flex items-start gap-2.5 text-xs border ${
+                  esModoAutomatico
+                    ? 'bg-petroleo-50 border-petroleo/25 text-petroleo'
+                    : 'bg-hueso/80 border-hueso-border text-petroleo'
+                }`}
+              >
+                {esModoAutomatico ? (
+                  <Fingerprint className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
+                )}
                 <p>
-                  Por seguridad, el comprobante se envía como <strong>“Solicitada”</strong> para que el estudio verifique los datos antes de emitir en ARCA.
+                  {esModoAutomatico ? (
+                    <>
+                      <strong>Modo Automático con seguridad biométrica:</strong> al confirmar te pediremos tu{' '}
+                      <strong>huella, rostro o PIN del celular</strong> antes de disparar la emisión en ARCA.
+                    </>
+                  ) : (
+                    <>
+                      Por seguridad, el comprobante se envía como <strong>“Solicitada”</strong> para que el estudio verifique los datos antes de emitir en ARCA.
+                    </>
+                  )}
                 </p>
               </div>
+
+              {pedirPinFallback && esModoAutomatico && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-extrabold text-petroleo">
+                    Confirmá tu PIN de acceso para emitir
+                  </label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={pinConfirmacionManual}
+                    onChange={(e) => setPinConfirmacionManual(e.target.value)}
+                    placeholder="Ingresá tu PIN de acceso..."
+                    className="w-full px-3.5 py-2.5 rounded-xl border-2 border-petroleo/40 bg-white text-sm font-bold focus:outline-none focus:border-petroleo"
+                  />
+                </div>
+              )}
+
+              {errorModal && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{errorModal}</span>
+                </div>
+              )}
 
               <div className="bg-[#F8FAFC] border border-slate-200 rounded-2xl p-4 space-y-2 text-xs">
                 <FilaResumen label="Comprobante" valor={tipoComprobante} destacado />
@@ -552,11 +756,20 @@ export default function FacturarTab({ ventas = [], onSolicitarFactura }) {
                 </button>
                 <button
                   type="button"
-                  disabled={enviando}
+                  disabled={enviando || verificandoBio}
                   onClick={handleConfirmarEnvio}
-                  className="py-3.5 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-60 text-white font-extrabold text-xs shadow-md"
+                  className="py-3.5 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-60 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-1.5"
                 >
-                  {enviando ? 'Enviando...' : 'Confirmar envío'}
+                  {esModoAutomatico && <Fingerprint className="w-4 h-4 shrink-0" />}
+                  <span>
+                    {verificandoBio
+                      ? 'Validando huella / PIN...'
+                      : enviando
+                        ? 'Enviando...'
+                        : esModoAutomatico
+                          ? 'Validar huella y Emitir'
+                          : 'Confirmar envío'}
+                  </span>
                 </button>
               </div>
             </div>

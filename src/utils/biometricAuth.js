@@ -258,3 +258,35 @@ export async function autenticarConBiometria() {
     nombre: perfil.nombre
   };
 }
+
+/**
+ * Verificación biométrica estricta antes de emitir una factura en Modo Automático.
+ * - Si el dispositivo ya tiene huella/PIN vinculado para este CUIT, exige autenticarConBiometria().
+ * - Si el dispositivo soporta WebAuthn pero aún no vinculó la huella, ejecuta un challenge
+ *   platform con userVerification: 'required' para exigir huella / rostro / PIN del celular.
+ * - Si el usuario cancela o falla, SIEMPRE lanza error y bloquea la emisión.
+ */
+export async function verificarBiometriaParaEmision({ cuit, pin, nombre }) {
+  const perfil = obtenerPerfilBiometrico();
+  if (perfil && String(perfil.cuit) === String(cuit)) {
+    return autenticarConBiometria();
+  }
+
+  const { disponible, motivo } = await verificarDisponibilidadBiometria();
+  if (!disponible) {
+    return { ok: false, fallbackPinRequerido: true, motivo };
+  }
+
+  // Vincular y verificar en un solo paso exigiendo userVerification: 'required'
+  const nuevoPerfil = await registrarBiometriaDispositivo({ cuit, pin, nombre });
+  if (!nuevoPerfil?.credentialId) {
+    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+  }
+  return {
+    ok: true,
+    verified: true,
+    cuit: nuevoPerfil.cuit,
+    pin: nuevoPerfil.pin,
+    nombre: nuevoPerfil.nombre
+  };
+}

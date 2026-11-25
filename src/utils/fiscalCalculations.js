@@ -152,6 +152,24 @@ export const normalizarCliente = (raw = {}, index = 0) => {
       0
     ),
     Estado_Pago: String(raw.Estado_Pago || raw.estadoPago || raw['Estado Mes'] || raw['Estado Mes Actual'] || 'PENDIENTE').trim(),
+    Modo_Facturacion: String(
+      raw.Modo_Facturacion ||
+        raw.modoFacturacion ||
+        raw['Modo Facturación'] ||
+        raw['Modo Facturacion'] ||
+        'Manual'
+    ).trim(),
+    facturacionAutomatica:
+      Boolean(raw.facturacionAutomatica) ||
+      /auto|direct/i.test(
+        String(
+          raw.Modo_Facturacion ||
+            raw.modoFacturacion ||
+            raw['Modo Facturación'] ||
+            raw['Modo Facturacion'] ||
+            ''
+        )
+      ),
     Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim(),
     Link_Privado: String(raw.Link_Privado || '').trim(),
     vepDisponible: raw.vepDisponible || null,

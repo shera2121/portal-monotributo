@@ -556,8 +556,11 @@ export default function App() {
 
             {tabActiva === 'facturar' && (
               <FacturarTab
+                cliente={clienteActual}
                 ventas={portalData?.ventas || []}
+                sesionPin={sesion?.pin || ''}
                 onSolicitarFactura={handleSolicitarFactura}
+                onToast={mostrarToast}
               />
             )}
 

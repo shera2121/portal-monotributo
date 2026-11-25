@@ -3,8 +3,10 @@
  * ============================================================================
  * Importado automáticamente en el Service Worker generado por vite-plugin-pwa.
  * Maneja:
- *  - Evento 'push': muestra notificación nativa con sonido, ícono y vibración.
- *  - Evento 'notificationclick': abre el enlace del PDF o "Mis Documentos".
+ *  - Evento 'push': muestra notificación nativa en Android con sonido, ícono,
+ *    vibración [200, 100, 200], renotify y requireInteraction.
+ *  - Evento 'notificationclick': abre directamente el PDF de la factura/documento
+ *    (data.pdfUrl / data.url) o la sección "Mis Documentos" de la PWA.
  */
 
 self.addEventListener('push', (event) => {
@@ -22,12 +24,13 @@ self.addEventListener('push', (event) => {
     payload.body ||
     payload.mensaje ||
     payload.cuerpo ||
-    'Tenés un nuevo documento (VEP, Constancia o Factura) disponible para descargar.';
+    'Tenés una nueva factura o documento PDF disponible para descargar.';
 
-  const targetUrl =
+  const pdfUrl =
+    payload.data?.pdfUrl ||
+    payload.pdfUrl ||
     payload.data?.url ||
     payload.url ||
-    payload.pdfUrl ||
     '/?seccion=documentos';
 
   const options = {
@@ -37,11 +40,16 @@ self.addEventListener('push', (event) => {
     vibrate: [200, 100, 200],
     requireInteraction: true,
     silent: false,
-    tag: payload.tag || 'gr-estudio-documento',
     renotify: true,
+    tag: payload.tag || payload.data?.tag || `gr-estudio-doc-${Date.now()}`,
+    actions: [
+      { action: 'open_pdf', title: 'Ver / Descargar PDF' },
+      { action: 'open_app', title: 'Abrir Mis Documentos' }
+    ],
     data: {
       ...(payload.data || {}),
-      url: targetUrl
+      url: pdfUrl,
+      pdfUrl
     }
   };
 
@@ -51,14 +59,24 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  const rawUrl = event.notification?.data?.url || '/?seccion=documentos';
+  const notifData = event.notification?.data || {};
+  const rawUrl =
+    event.action === 'open_app'
+      ? '/?seccion=documentos'
+      : notifData.pdfUrl || notifData.url || '/?seccion=documentos';
 
   event.waitUntil(
     (async () => {
-      const targetFullUrl = new URL(rawUrl, self.location.origin).href;
+      let targetFullUrl;
+      try {
+        targetFullUrl = new URL(rawUrl, self.location.origin).href;
+      } catch {
+        targetFullUrl = new URL('/?seccion=documentos', self.location.origin).href;
+      }
+
       const esMismoOrigen = targetFullUrl.startsWith(self.location.origin);
 
-      // Si es un enlace directo a PDF externo (ej. Google Drive), abrirlo directo
+      // Si es un enlace directo a PDF externo (ej. Google Drive / factura ARCA), abrirlo directamente
       if (!esMismoOrigen) {
         if (self.clients.openWindow) {
           return self.clients.openWindow(targetFullUrl);
