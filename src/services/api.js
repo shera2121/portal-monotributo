@@ -22,7 +22,12 @@
 
 import { APPS_SCRIPT_URL, USE_MOCK_DATA, DEMO_CREDENTIALS } from '../config.js';
 import { crearDatosDemoIniciales } from '../data/mockData.js';
-import { cleanCUIT, normalizarCliente, getHoyISO } from '../utils/fiscalCalculations.js';
+import {
+  cleanCUIT,
+  normalizarCliente,
+  getHoyISO,
+  limpiarFechasLargasEnTexto
+} from '../utils/fiscalCalculations.js';
 import { leerStorageSeguro, guardarStorageSeguro, leerJsonSeguro, guardarJsonSeguro } from '../utils/storage.js';
 
 const DEMO_DB_KEY = 'gr_portal_demo_db_v2';
@@ -144,56 +149,102 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
       const urlDescarga = downloadUrlDirecta || linksExtraidos.urlDescarga || urlVista;
       const pdfUrl = urlVista || urlDescarga;
 
-      const observacionesLimpias = observaciones
-        .replace(/https?:\/\/[^\s"'<>|]+/gi, '')
-        .replace(/\b(descarga|pdf|link|enlace|archivo)\s*:?/gi, '')
-        .replace(/[|]+/g, ' ')
-        .replace(/\s{2,}/g, ' ')
-        .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, '')
-        .trim();
+      const observacionesLimpias = limpiarFechasLargasEnTexto(
+        observaciones
+          .replace(/https?:\/\/[^\s"'<>|]+/gi, '')
+          .replace(/\b(descarga|pdf|link|enlace|archivo)\s*:?/gi, '')
+          .replace(/[|]+/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, '')
+          .trim()
+      );
+
+      const periodoLimpio = limpiarFechasLargasEnTexto(
+        String(row.periodo || row.Período || row.Periodo || '').trim()
+      );
+      const impuestoLimpio = limpiarFechasLargasEnTexto(
+        String(row.impuesto || row.Impuesto || row.detalle || row.Detalle || '').trim()
+      );
+      const detalleCrudo = String(
+        row.detalle ||
+          row.Detalle ||
+          row.descripcion ||
+          row['Descripción'] ||
+          (row.impuesto ? `${row.impuesto}${periodoLimpio ? ` (${periodoLimpio})` : ''}` : '') ||
+          periodoLimpio ||
+          ''
+      ).trim();
 
       return {
         id: String(row.id || row.ID || row.Id || `SOL-${idx + 1}`),
         cuit: cleanCUIT(row.cuit || row.CUIT || cuitNorm),
-        fecha: String(
-          row.fecha ||
-            row.Fecha ||
-            row.fechaSolicitud ||
-            row['Fecha / Hora'] ||
-            row['Fecha'] ||
-            row.Timestamp ||
-            ''
-        ).trim(),
-        tipo: String(
-          row.tipo ||
-            row.Tipo ||
-            row.tramite ||
-            row['Tipo Trámite'] ||
-            row['Tipo de Solicitud'] ||
-            row['Trámite'] ||
-            row.impuesto ||
-            'Documento'
-        ).trim(),
-        impuesto: String(row.impuesto || row.Impuesto || row.detalle || row.Detalle || '').trim(),
-        periodo: String(row.periodo || row.Período || row.Periodo || '').trim(),
+        fecha: limpiarFechasLargasEnTexto(
+          String(
+            row.fecha ||
+              row.Fecha ||
+              row.fechaSolicitud ||
+              row['Fecha / Hora'] ||
+              row['Fecha'] ||
+              row.Timestamp ||
+              ''
+          ).trim()
+        ),
+        tipo: limpiarFechasLargasEnTexto(
+          String(
+            row.tipo ||
+              row.Tipo ||
+              row.tramite ||
+              row['Tipo Trámite'] ||
+              row['Tipo de Solicitud'] ||
+              row['Trámite'] ||
+              row.impuesto ||
+              'Documento'
+          ).trim()
+        ),
+        impuesto: impuestoLimpio,
+        periodo: periodoLimpio,
         redPago: String(row.redPago || row['Red de Pago'] || row.red || '').trim(),
-        detalle: String(
-          row.detalle ||
-            row.Detalle ||
-            row.descripcion ||
-            row['Descripción'] ||
-            (row.impuesto ? `${row.impuesto}${row.periodo ? ` (${row.periodo})` : ''}` : '') ||
-            row.periodo ||
-            ''
-        ).trim(),
+        detalle: limpiarFechasLargasEnTexto(detalleCrudo),
         estado: String(row.estado || row.Estado || 'Solicitado').trim(),
-        observaciones,
+        observaciones: limpiarFechasLargasEnTexto(observaciones),
         observacionesLimpias,
         pdfUrl,
         urlVista,
         urlDescarga
       };
     });
+}
+
+function normalizarNovedades(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .filter((item) => {
+      if (!item || typeof item !== 'object') return false;
+      if (item.activo === false || String(item.activo || '').toLowerCase() === 'false') return false;
+      if (String(item.estado || '').toLowerCase() === 'inactivo') return false;
+      const titulo = String(item.titulo || item.Titulo || item['Título'] || '').trim();
+      const desc = String(item.descripcion || item.Descripcion || item['Descripción'] || item.texto || '').trim();
+      return Boolean(titulo || desc);
+    })
+    .map((item, idx) => ({
+      id: String(item.id || item.ID || item.Id || `NOV-${idx + 1}`),
+      etiqueta: limpiarFechasLargasEnTexto(
+        String(item.etiqueta || item.Etiqueta || item.tag || item.categoria || '').trim()
+      ),
+      titulo: limpiarFechasLargasEnTexto(
+        String(item.titulo || item.Titulo || item['Título'] || '').trim()
+      ),
+      descripcion: limpiarFechasLargasEnTexto(
+        String(item.descripcion || item.Descripcion || item['Descripción'] || item.texto || '').trim()
+      ),
+      textoBoton: String(
+        item.textoBoton || item.Texto_Boton || item['Texto Botón'] || item['Texto Boton'] || item.boton || ''
+      ).trim(),
+      enlaceUrl: String(
+        item.enlaceUrl || item.Enlace_URL || item['Enlace URL'] || item.url || item.link || ''
+      ).trim(),
+      estilo: String(item.estilo || item.Estilo || item.tema || 'petroleo').trim().toLowerCase()
+    }));
 }
 
 function derivarEstadoVepDesdeSolicitudes(solicitudes = [], cuotaFallback = 0) {
@@ -305,7 +356,8 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
       ventas: Array.isArray(data.ventas) ? data.ventas : [],
       comprasGastos: Array.isArray(data.comprasGastos) ? data.comprasGastos : [],
       alertasArca: Array.isArray(data.alertasArca) ? data.alertasArca : [],
-      solicitudesTramites: solicitudesNorm
+      solicitudesTramites: solicitudesNorm,
+      novedades: normalizarNovedades(data.novedades || data.banners)
     };
   }
 
@@ -338,6 +390,7 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
       comprasGastos: [],
       alertasArca: [],
       solicitudesTramites: [],
+      novedades: [],
       _legacyClientes: limpios
     };
   }
@@ -373,6 +426,7 @@ export async function getPortalData({ cuit, pin, urlParams = null, urlManual = n
       ...db,
       cliente: normalizarCliente(db.cliente),
       solicitudesTramites: normalizarSolicitudesDocumentos(db, db.cliente?.CUIT || cuitLimpio),
+      novedades: normalizarNovedades(db.novedades),
       _demo: true
     };
   }

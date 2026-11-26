@@ -1,28 +1,66 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
   Clock,
   Download,
   Eye,
+  FileDown,
   FileText,
   Search,
   Share2,
   X,
   XCircle
 } from 'lucide-react';
-import { formatARS, formatFechaAR } from '../utils/fiscalCalculations.js';
+import {
+  formatARS,
+  formatFechaAR,
+  limpiarFechasLargasEnTexto
+} from '../utils/fiscalCalculations.js';
 import {
   compartirDocumento,
   descargarBlob,
-  generarPdfComprobante
+  generarPdfComprobante,
+  generarPdfConstancia
 } from '../utils/documentHelpers.js';
 
-export default function HistorialTab({ cliente, ventas = [], comprasGastos = [], onToast }) {
-  const [solapa, setSolapa] = useState('compras'); // 'ventas' | 'compras'
+const FILTROS_TIPO_DOCUMENTO = ['Todos', 'VEP', 'Constancia', 'Factura / NC'];
+
+function coincideFiltroTipoDocumento(doc, filtro) {
+  if (filtro === 'Todos') return true;
+  const textoTipo = `${doc?.tipo || ''} ${doc?.impuesto || ''} ${doc?.detalle || ''}`.toLowerCase();
+  if (filtro === 'VEP') {
+    return /\bvep\b/.test(textoTipo);
+  }
+  if (filtro === 'Constancia') {
+    return /constancia|inscripci/.test(textoTipo);
+  }
+  if (filtro === 'Factura / NC') {
+    return /factura|nota\s*de\s*cr[eé]dito|nota_credito|\bnc\b|comprobante\s*c/.test(textoTipo);
+  }
+  return true;
+}
+
+export default function HistorialTab({
+  cliente,
+  ventas = [],
+  comprasGastos = [],
+  solicitudesDocumentos = [],
+  solapaInicial = 'compras',
+  solapaNonce = 0,
+  onToast
+}) {
+  const [solapa, setSolapa] = useState(solapaInicial); // 'ventas' | 'compras' | 'documentos'
   const [periodo, setPeriodo] = useState('Todos');
+  const [filtroTipoDoc, setFiltroTipoDoc] = useState('Todos');
   const [busqueda, setBusqueda] = useState('');
   const [visorItem, setVisorItem] = useState(null);
+
+  useEffect(() => {
+    if (solapaInicial) {
+      setSolapa(solapaInicial);
+    }
+  }, [solapaInicial, solapaNonce]);
 
   const listaActual = solapa === 'ventas' ? ventas : comprasGastos;
 
@@ -36,8 +74,9 @@ export default function HistorialTab({ cliente, ventas = [], comprasGastos = [],
     return ['Todos', ...Array.from(set).sort((a, b) => (a < b ? 1 : -1))];
   }, [ventas, comprasGastos]);
 
-  // Filtrado por período + texto/monto
+  // Filtrado por período + texto/monto (Ventas / Compras y Gastos)
   const filtrados = useMemo(() => {
+    if (solapa === 'documentos') return [];
     const q = busqueda.trim().toLowerCase();
     return listaActual.filter((item) => {
       const itemPeriodo = item.periodo || String(item.fecha || '').slice(0, 7);
@@ -64,7 +103,37 @@ export default function HistorialTab({ cliente, ventas = [], comprasGastos = [],
 
       return campos.includes(q);
     });
-  }, [listaActual, periodo, busqueda]);
+  }, [listaActual, periodo, busqueda, solapa]);
+
+  // Filtrado de Documentos del Estudio (VEPs, Constancias, Facturas y NC)
+  const documentosFiltrados = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    return solicitudesDocumentos.filter((doc) => {
+      if (!coincideFiltroTipoDocumento(doc, filtroTipoDoc)) return false;
+      if (!q) return true;
+      const campos = [
+        limpiarFechasLargasEnTexto(doc.tipo),
+        limpiarFechasLargasEnTexto(doc.detalle),
+        limpiarFechasLargasEnTexto(doc.periodo),
+        limpiarFechasLargasEnTexto(doc.observacionesLimpias),
+        doc.estado,
+        formatFechaAR(doc.fecha)
+      ]
+        .join(' ')
+        .toLowerCase();
+      return campos.includes(q);
+    });
+  }, [solicitudesDocumentos, filtroTipoDoc, busqueda]);
+
+  const documentosConPdfListo = useMemo(
+    () =>
+      documentosFiltrados.filter((doc) => {
+        const estLower = String(doc.estado || '').toLowerCase();
+        const tieneLink = Boolean(doc.urlDescarga || doc.pdfUrl || doc.urlVista);
+        return tieneLink && !estLower.includes('rechaz') && !estLower.includes('cancel');
+      }).length,
+    [documentosFiltrados]
+  );
 
   const sumaTotalFiltrada = useMemo(
     () =>
@@ -165,88 +234,318 @@ export default function HistorialTab({ cliente, ventas = [], comprasGastos = [],
     }
   };
 
+  const handleDescargarDocumentoEstudio = (doc) => {
+    const linkFinal = doc?.urlDescarga || doc?.pdfUrl || doc?.urlVista;
+    if (!linkFinal) return;
+    if (linkFinal.includes('/demo-')) {
+      const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
+      if (esVep) {
+        onToast('En modo producción este botón descarga directamente el PDF real del VEP desde Google Drive.');
+        return;
+      }
+      const blob = generarPdfConstancia(cliente);
+      descargarBlob(blob, `${String(doc.tipo || 'Documento').replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`);
+      onToast('PDF descargado en tu dispositivo.');
+      return;
+    }
+    window.open(linkFinal, '_blank', 'noopener,noreferrer');
+    onToast('Abriendo PDF para descargar...');
+  };
+
+  const handleCompartirDocumentoEstudio = async (doc) => {
+    const linkCompartir = doc?.urlVista || doc?.pdfUrl || doc?.urlDescarga;
+    if (!linkCompartir) return;
+    const esDemoLink = linkCompartir.includes('/demo-');
+    const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
+    const blob = esDemoLink && !esVep ? generarPdfConstancia(cliente) : null;
+    const tipoLimpio = limpiarFechasLargasEnTexto(doc.tipo || 'Documento');
+    const detalleLimpio = limpiarFechasLargasEnTexto(doc.detalle || '');
+
+    const res = await compartirDocumento({
+      titulo: `${tipoLimpio} — ${cliente.Cliente}`,
+      texto: `${tipoLimpio}${detalleLimpio ? ` (${detalleLimpio})` : ''} — GR Estudio Impositivo Digital`,
+      url: esDemoLink ? undefined : linkCompartir,
+      blob,
+      nombreArchivo: `${tipoLimpio.replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`
+    });
+
+    if (res.shared) {
+      onToast(
+        res.method === 'clipboard-fallback'
+          ? 'Enlace del PDF copiado para compartir.'
+          : res.method === 'download-fallback'
+            ? 'PDF descargado para compartir.'
+            : 'Documento listo para compartir.'
+      );
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Cabecera + Solapas Internas */}
       <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 space-y-3.5">
         <div>
-          <h2 className="text-lg font-black text-petroleo leading-tight">Historial de Comprobantes</h2>
-          <p className="text-xs text-slate-500">Consulta de solo lectura, descargas y estados del estudio.</p>
+          <h2 className="text-lg font-black text-petroleo leading-tight">Historial y Documentos</h2>
+          <p className="text-xs text-slate-500">
+            Consultá tus ventas, compras y todos los PDFs enviados por el estudio.
+          </p>
         </div>
 
-        {/* 1. Dos solapas internas: Ventas | Compras y Gastos */}
-        <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+        {/* 1. Tres solapas internas: Ventas | Compras y Gastos | Documentos */}
+        <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-2xl">
           <button
             type="button"
             onClick={() => setSolapa('ventas')}
-            className={`py-2.5 px-3 rounded-xl text-xs font-extrabold transition ${
+            className={`py-2 px-1.5 rounded-xl text-[11px] sm:text-xs font-extrabold leading-tight flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-center transition ${
               solapa === 'ventas'
                 ? 'bg-petroleo text-white shadow-sm'
                 : 'text-slate-600 hover:text-petroleo'
             }`}
           >
-            Ventas ({ventas.length})
+            <span>Ventas</span>
+            <span className="opacity-80 text-[10px] sm:text-[11px]">({ventas.length})</span>
           </button>
           <button
             type="button"
             onClick={() => setSolapa('compras')}
-            className={`py-2.5 px-3 rounded-xl text-xs font-extrabold transition ${
+            className={`py-2 px-1.5 rounded-xl text-[11px] sm:text-xs font-extrabold leading-tight flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-center transition ${
               solapa === 'compras'
                 ? 'bg-ladrillo text-white shadow-sm'
                 : 'text-slate-600 hover:text-ladrillo'
             }`}
           >
-            Compras y Gastos ({comprasGastos.length})
+            <span>Compras y Gastos</span>
+            <span className="opacity-80 text-[10px] sm:text-[11px]">({comprasGastos.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSolapa('documentos')}
+            className={`py-2 px-1.5 rounded-xl text-[11px] sm:text-xs font-extrabold leading-tight flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-center transition ${
+              solapa === 'documentos'
+                ? 'bg-petroleo text-white shadow-sm'
+                : 'text-slate-600 hover:text-petroleo'
+            }`}
+          >
+            <span>Documentos</span>
+            <span className="opacity-80 text-[10px] sm:text-[11px]">({solicitudesDocumentos.length})</span>
           </button>
         </div>
 
-        {/* 2. Filtros: Período + Buscador */}
-        <div className="grid grid-cols-12 gap-2">
-          <div className="col-span-5">
-            <select
-              aria-label="Filtrar por período mensual"
-              value={periodo}
-              onChange={(e) => setPeriodo(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl border-2 border-slate-200 bg-slate-50 text-xs font-extrabold text-petroleo focus:outline-none focus:border-petroleo"
-            >
-              {periodosDisponibles.map((p) => (
-                <option key={p} value={p}>
-                  {p === 'Todos' ? 'Todos los meses' : p}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="col-span-7 relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar texto, N° o monto..."
-              className="w-full pl-9 pr-3 py-2.5 rounded-xl border-2 border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:border-petroleo"
-            />
-          </div>
-        </div>
+        {/* 2. Filtros según solapa */}
+        {solapa === 'documentos' ? (
+          <div className="space-y-2.5">
+            {/* Filtro rápido por tipo de documento */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {FILTROS_TIPO_DOCUMENTO.map((tipoFiltro) => {
+                const activo = filtroTipoDoc === tipoFiltro;
+                return (
+                  <button
+                    key={tipoFiltro}
+                    type="button"
+                    onClick={() => setFiltroTipoDoc(tipoFiltro)}
+                    className={`px-3 py-1.5 rounded-full text-[11px] font-extrabold border transition ${
+                      activo
+                        ? 'bg-petroleo text-white border-petroleo shadow-sm'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-petroleo/40 hover:text-petroleo'
+                    }`}
+                  >
+                    {tipoFiltro}
+                  </button>
+                );
+              })}
+            </div>
 
-        {/* Barra superior de totales filtrados */}
-        <div className="bg-petroleo text-white rounded-2xl px-4 py-3 flex items-center justify-between gap-2">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
-              Comprobantes filtrados
-            </span>
-            <strong className="text-base font-black">{filtrados.length}</strong>
+            {/* Buscador de documentos */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar VEP, constancia, factura, fecha..."
+                className="w-full pl-9 pr-3 py-2.5 rounded-xl border-2 border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:border-petroleo"
+              />
+            </div>
+
+            {/* Resumen superior de Documentos */}
+            <div className="bg-petroleo text-white rounded-2xl px-4 py-3 flex items-center justify-between gap-2">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
+                  Documentos mostrados
+                </span>
+                <strong className="text-base font-black">{documentosFiltrados.length}</strong>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
+                  Listos en PDF
+                </span>
+                <strong className="text-base font-black">{documentosConPdfListo}</strong>
+              </div>
+            </div>
           </div>
-          <div className="text-right">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
-              Suma total filtrada
-            </span>
-            <strong className="text-base font-black">{formatARS(sumaTotalFiltrada)}</strong>
-          </div>
-        </div>
+        ) : (
+          <>
+            {/* Filtros: Período + Buscador */}
+            <div className="grid grid-cols-12 gap-2">
+              <div className="col-span-5">
+                <select
+                  aria-label="Filtrar por período mensual"
+                  value={periodo}
+                  onChange={(e) => setPeriodo(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border-2 border-slate-200 bg-slate-50 text-xs font-extrabold text-petroleo focus:outline-none focus:border-petroleo"
+                >
+                  {periodosDisponibles.map((p) => (
+                    <option key={p} value={p}>
+                      {p === 'Todos' ? 'Todos los meses' : p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-7 relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={busqueda}
+                  onChange={(e) => setBusqueda(e.target.value)}
+                  placeholder="Buscar texto, N° o monto..."
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl border-2 border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:border-petroleo"
+                />
+              </div>
+            </div>
+
+            {/* Barra superior de totales filtrados */}
+            <div className="bg-petroleo text-white rounded-2xl px-4 py-3 flex items-center justify-between gap-2">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
+                  Comprobantes filtrados
+                </span>
+                <strong className="text-base font-black">{filtrados.length}</strong>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-hueso block">
+                  Suma total filtrada
+                </span>
+                <strong className="text-base font-black">{formatARS(sumaTotalFiltrada)}</strong>
+              </div>
+            </div>
+          </>
+        )}
       </section>
 
-      {/* Lista de comprobantes */}
-      {filtrados.length === 0 ? (
+      {/* Lista según solapa */}
+      {solapa === 'documentos' ? (
+        documentosFiltrados.length === 0 ? (
+          <div className="bg-white rounded-3xl p-8 text-center border border-slate-200/80 space-y-2">
+            <FileDown className="w-8 h-8 text-slate-300 mx-auto" />
+            <p className="text-sm font-extrabold text-slate-700">
+              {solicitudesDocumentos.length === 0
+                ? 'Todavía no tenés documentos enviados'
+                : 'Sin documentos en este filtro'}
+            </p>
+            <p className="text-xs text-slate-500">
+              {solicitudesDocumentos.length === 0
+                ? 'Cuando el estudio te envíe un VEP, Constancia, Factura o Nota de Crédito, aparecerá acá para ver o compartir.'
+                : 'Probá eligiendo “Todos” o borrando el texto del buscador.'}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {documentosFiltrados.map((doc) => {
+              const estLower = String(doc.estado || '').toLowerCase();
+              const esEnviado =
+                estLower.includes('enviad') ||
+                estLower.includes('emitid') ||
+                estLower.includes('cae') ||
+                estLower.includes('listo');
+              const esError =
+                estLower.includes('rechaz') ||
+                estLower.includes('observ') ||
+                estLower.includes('cancel');
+              const tieneLinkPdf = Boolean(doc.urlDescarga || doc.pdfUrl || doc.urlVista);
+              const tienePdfListo = tieneLinkPdf && !esError;
+
+              const badgeCls = esEnviado
+                ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
+                : esError
+                  ? 'bg-red-100 text-red-900 border-red-200'
+                  : 'bg-amber-100 text-amber-900 border-amber-200';
+
+              const tipoLimpio = limpiarFechasLargasEnTexto(doc.tipo || 'Documento');
+              const detalleLimpio = limpiarFechasLargasEnTexto(doc.detalle || '');
+              const obsLimpias = limpiarFechasLargasEnTexto(doc.observacionesLimpias || '');
+
+              return (
+                <article
+                  key={doc.id}
+                  className={`rounded-3xl p-4 shadow-sm border space-y-2.5 ${
+                    tienePdfListo
+                      ? 'bg-white border-emerald-200/90'
+                      : 'bg-white border-slate-200/80'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-black text-petroleo leading-snug">
+                        {tipoLimpio}
+                      </p>
+                      {doc.fecha && (
+                        <span className="text-[11px] text-slate-500 font-semibold">
+                          {formatFechaAR(doc.fecha)}
+                        </span>
+                      )}
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2.5 py-1 rounded-full border shrink-0 ${badgeCls}`}
+                    >
+                      {esEnviado ? (
+                        <CheckCircle2 className="w-3 h-3" />
+                      ) : esError ? (
+                        <AlertCircle className="w-3 h-3" />
+                      ) : (
+                        <Clock className="w-3 h-3" />
+                      )}
+                      <span>{doc.estado}</span>
+                    </span>
+                  </div>
+
+                  {detalleLimpio && (
+                    <p className="text-xs font-semibold text-slate-700 leading-snug">
+                      {detalleLimpio}
+                    </p>
+                  )}
+
+                  {obsLimpias && (
+                    <p className="text-[11px] text-slate-600 leading-snug bg-[#F8FAFC] rounded-xl px-3 py-2 border border-slate-100">
+                      {obsLimpias}
+                    </p>
+                  )}
+
+                  {tienePdfListo && (
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleDescargarDocumentoEstudio(doc)}
+                        className="py-3 px-3 rounded-2xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                      >
+                        <Download className="w-4 h-4 shrink-0" />
+                        <span>Ver / Descargar PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCompartirDocumentoEstudio(doc)}
+                        className="py-3 px-3 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                      >
+                        <Share2 className="w-4 h-4 shrink-0" />
+                        <span>Compartir</span>
+                      </button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )
+      ) : filtrados.length === 0 ? (
         <div className="bg-white rounded-3xl p-8 text-center border border-slate-200/80 space-y-2">
           <FileText className="w-8 h-8 text-slate-300 mx-auto" />
           <p className="text-sm font-extrabold text-slate-700">Sin comprobantes en este filtro</p>

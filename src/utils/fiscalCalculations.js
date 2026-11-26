@@ -66,11 +66,45 @@ export const formatCUIT = (valor) => {
   return `${digits.slice(0, 2)}-${digits.slice(2, 10)}-${digits.slice(10, 11)}`;
 };
 
+const MESES_EN_MAP = {
+  jan: '01',
+  feb: '02',
+  mar: '03',
+  apr: '04',
+  may: '05',
+  jun: '06',
+  jul: '07',
+  aug: '08',
+  sep: '09',
+  oct: '10',
+  nov: '11',
+  dec: '12'
+};
+
+const REGEX_FECHA_JS_LARGA =
+  /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{4})(?:\s+\d{2}:\d{2}:\d{2})?(?:\s+GMT[+-]\d{4})?(?:\s*\([^)]*\))?/gi;
+
+/**
+ * Reemplaza fechas largas generadas por Date.toString() de JavaScript / Google Sheets
+ * (ej. "Sun Nov 01 2026 00:00:00 GMT-0300 (hora estándar de Argentina)") por "01/11/2026".
+ */
+export const limpiarFechasLargasEnTexto = (texto) => {
+  if (texto === null || texto === undefined) return '';
+  const str = String(texto);
+  if (!str) return '';
+  return str.replace(REGEX_FECHA_JS_LARGA, (_, mesEn, dia, anio) => {
+    const mesNum = MESES_EN_MAP[String(mesEn).toLowerCase()] || '01';
+    const diaPad = String(dia).padStart(2, '0');
+    return `${diaPad}/${mesNum}/${anio}`;
+  });
+};
+
 export const formatFechaAR = (isoDate) => {
   if (!isoDate) return '-';
-  const match = String(isoDate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const raw = limpiarFechasLargasEnTexto(isoDate).trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (match) return `${match[3]}/${match[2]}/${match[1]}`;
-  return String(isoDate);
+  return raw;
 };
 
 export const getHoyISO = () => {

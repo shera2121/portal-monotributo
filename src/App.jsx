@@ -85,7 +85,13 @@ export default function App() {
 
   const [sesion, setSesion] = useState(() => leerJsonSeguro(SESSION_KEY, null));
   const [portalData, setPortalData] = useState(null);
-  const [tabActiva, setTabActiva] = useState('inicio');
+  const [tabActiva, setTabActiva] = useState(() =>
+    parametrosUrl.seccionParam === 'documentos' ? 'historial' : 'inicio'
+  );
+  const [solapaHistorial, setSolapaHistorial] = useState(() =>
+    parametrosUrl.seccionParam === 'documentos' ? 'documentos' : 'compras'
+  );
+  const [solapaHistorialNonce, setSolapaHistorialNonce] = useState(0);
   const [cargando, setCargando] = useState(false);
   const [errorLogin, setErrorLogin] = useState('');
   const [notificacion, setNotificacion] = useState(null);
@@ -574,9 +580,9 @@ export default function App() {
                 cliente={clienteActual}
                 calculos={calculosReales}
                 alertasArca={portalData?.alertasArca || []}
-                solicitudesDocumentos={portalData?.solicitudesTramites || []}
+                novedades={portalData?.novedades || []}
+                cantidadDocumentos={(portalData?.solicitudesTramites || []).length}
                 actualizando={cargando}
-                autoScrollDocumentos={parametrosUrl.seccionParam === 'documentos'}
                 onActualizarInforme={handleRefrescar}
                 onGuardarSuscripcionPush={(subData) =>
                   savePushSubscription({
@@ -587,6 +593,12 @@ export default function App() {
                 }
                 onSolicitarVep={handleSolicitarVep}
                 onSolicitarConstancia={handleSolicitarConstancia}
+                onIrADocumentos={() => {
+                  setSolapaHistorial('documentos');
+                  setSolapaHistorialNonce((n) => n + 1);
+                  setTabActiva('historial');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
                 onIrASimulador={() => {
                   setTabActiva('simulador');
                   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -613,7 +625,11 @@ export default function App() {
                   analyzeReceipt({ cuit: sesion.cuit, pin: sesion.pin, payload })
                 }
                 onSubirComprobante={handleSubirComprobante}
-                onIrAHistorial={() => setTabActiva('historial')}
+                onIrAHistorial={() => {
+                  setSolapaHistorial('compras');
+                  setSolapaHistorialNonce((n) => n + 1);
+                  setTabActiva('historial');
+                }}
                 onToast={mostrarToast}
               />
             )}
@@ -623,6 +639,9 @@ export default function App() {
                 cliente={clienteActual}
                 ventas={portalData?.ventas || []}
                 comprasGastos={portalData?.comprasGastos || []}
+                solicitudesDocumentos={portalData?.solicitudesTramites || []}
+                solapaInicial={solapaHistorial}
+                solapaNonce={solapaHistorialNonce}
                 onToast={mostrarToast}
               />
             )}

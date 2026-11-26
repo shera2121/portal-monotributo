@@ -341,6 +341,29 @@ export function crearDatosDemoIniciales() {
         estado: 'En proceso',
         observaciones: 'Recibida por el estudio para revisión previa a emisión en ARCA.'
       }
+    ],
+
+    novedades: [
+      {
+        id: 'NOV-01',
+        etiqueta: 'Recategorización',
+        titulo: 'Controlá tus últimos 12 meses antes del cierre',
+        descripcion:
+          'Revisá tu semáforo real en Inicio y usá el Simulador antes de emitir nuevas facturas grandes para evitar saltos imprevistos de categoría.',
+        textoBoton: 'Leer recomendación',
+        enlaceUrl: '',
+        estilo: 'petroleo'
+      },
+      {
+        id: 'NOV-02',
+        etiqueta: 'Recordatorio',
+        titulo: 'Vencimiento mensual del Monotributo día 20',
+        descripcion:
+          'Si todavía no recibiste tu VEP, podés solicitarlo en 1 toque desde Accesos rápidos y te avisamos por notificación apenas esté listo.',
+        textoBoton: 'Ver detalle',
+        enlaceUrl: '',
+        estilo: 'naranja'
+      }
     ]
   };
 }
