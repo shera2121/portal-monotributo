@@ -19,7 +19,15 @@ import { eliminarStorageSeguro, guardarJsonSeguro, leerJsonSeguro } from './stor
 const BIOMETRIC_PROFILE_KEY = 'gr_biometric_profile_v1';
 
 export const MENSAJE_FALLO_BIOMETRIA =
-  'No se pudo validar la huella o el PIN del celular. Intentá nuevamente o ingresá con tu CUIT y PIN del estudio.';
+  'No se pudo validar la huella dactilar en este dispositivo. La operación fue cancelada por seguridad.';
+
+export const MENSAJE_SIN_SOPORTE_BIOMETRIA =
+  'Este navegador o dispositivo no soporta validación biométrica (WebAuthn). Por seguridad, no se puede emitir en modo automático sin huella dactilar.';
+
+function obtenerRpIdActual() {
+  if (typeof window === 'undefined') return '';
+  return String(window.location.hostname || '').trim();
+}
 
 function bufferABase64Url(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -97,6 +105,8 @@ export async function verificarDisponibilidadBiometria() {
 export function obtenerPerfilBiometrico() {
   const perfil = leerJsonSeguro(BIOMETRIC_PROFILE_KEY, null);
   if (!perfil || !perfil.credentialId || !perfil.cuit || !perfil.pin) return null;
+  const rpActual = obtenerRpIdActual();
+  if (perfil.rpId && rpActual && perfil.rpId !== rpActual) return null;
   return perfil;
 }
 
@@ -105,28 +115,31 @@ export function eliminarPerfilBiometrico() {
 }
 
 /**
- * Registra una credencial WebAuthn en el dispositivo actual (huella / rostro / PIN celular).
- * Si el usuario cancela o falla, lanza error y NO guarda ni marca la biometría como activa.
+ * Registra una credencial WebAuthn en el dispositivo actual (platform authenticator,
+ * userVerification: 'required') ligada al dominio actual (rp.id).
+ * Si el usuario cancela, falla o el dispositivo no confirma UV (User Verified),
+ * lanza error y NO guarda ni marca la biometría como activa.
  */
 export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
   if (!esEntornoWebAuthnValido()) {
-    throw new Error(
-      'Este navegador o conexión (HTTP sin HTTPS) no permite activar huella o bloqueo del celular. En Vercel (HTTPS) funcionará normalmente.'
-    );
+    throw new Error(MENSAJE_SIN_SOPORTE_BIOMETRIA);
   }
 
+  const rpId = obtenerRpIdActual();
+  const cuitLimpio = String(cuit || '').replace(/\D/g, '') || String(cuit || '').trim();
   const encoder = new TextEncoder();
-  const userId = encoder.encode(`gr-${cuit}`);
-  const displayName = nombre || formatCUIT(cuit);
+  const userId = encoder.encode(`gr-${cuitLimpio}`).slice(0, 64);
+  const displayName = nombre || formatCUIT(cuitLimpio);
 
   const publicKeyOptions = {
     challenge: crearChallengeAleatorio(),
     rp: {
-      name: 'GR Estudio Digital'
+      name: 'GR Estudio Digital',
+      ...(rpId ? { id: rpId } : {})
     },
     user: {
       id: userId,
-      name: formatCUIT(cuit),
+      name: formatCUIT(cuitLimpio) || cuitLimpio,
       displayName
     },
     pubKeyCredParams: [
@@ -136,7 +149,8 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
     authenticatorSelection: {
       authenticatorAttachment: 'platform',
       userVerification: 'required',
-      residentKey: 'preferred'
+      residentKey: 'discouraged',
+      requireResidentKey: false
     },
     timeout: 60000,
     attestation: 'none'
@@ -148,14 +162,14 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
   } catch (err) {
     if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
       throw new Error(
-        'No se activó la huella ni el PIN del celular porque la operación fue cancelada. Podés reintentar más tarde.'
+        'Operación cancelada: no se completó la huella dactilar en el celular.'
       );
     }
     if (err?.name === 'SecurityError') {
       throw new Error('La biometría requiere abrir la app por HTTPS (Vercel) o localhost.');
     }
     throw new Error(
-      'No se pudo activar la huella o el PIN del celular en este dispositivo. Seguí usando tu CUIT y PIN del estudio.'
+      'No se pudo registrar ni validar la huella dactilar en este dispositivo. Verificá tener huella/bloqueo biométrico activo en Android.'
     );
   }
 
@@ -167,14 +181,23 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
     credential.rawId.byteLength === 0 ||
     !credential.response?.attestationObject
   ) {
-    throw new Error('El dispositivo no devolvió una credencial biométrica válida. No se activó.');
+    throw new Error('El dispositivo no devolvió una credencial biométrica válida. Operación bloqueada.');
+  }
+
+  // Verificar bandera UV (User Verified, bit 2 = 0x04 en byte 32 de authenticatorData) cuando el navegador la expone
+  if (typeof credential.response.getAuthenticatorData === 'function') {
+    const authData = new Uint8Array(credential.response.getAuthenticatorData());
+    if (authData.byteLength < 37 || (authData[32] & 0x04) === 0) {
+      throw new Error('El dispositivo no confirmó la verificación biométrica (UV). Operación bloqueada.');
+    }
   }
 
   const perfil = {
     credentialId: bufferABase64Url(credential.rawId),
-    cuit: String(cuit),
-    pin: String(pin),
+    cuit: cuitLimpio,
+    pin: String(pin || ''),
     nombre: displayName,
+    rpId,
     createdAt: new Date().toISOString()
   };
 
@@ -183,7 +206,8 @@ export async function registrarBiometriaDispositivo({ cuit, pin, nombre }) {
 }
 
 /**
- * Valida estrictamente la identidad del usuario con huella / rostro / PIN del celular.
+ * Valida estrictamente la identidad del usuario con huella / rostro / bloqueo biométrico del celular
+ * mediante navigator.credentials.get() con userVerification: 'required'.
  * NUNCA resuelve positivamente ante cancelación, falta de credencial o error.
  */
 export async function autenticarConBiometria() {
@@ -193,7 +217,7 @@ export async function autenticarConBiometria() {
   }
 
   if (!esEntornoWebAuthnValido()) {
-    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+    throw new Error(MENSAJE_SIN_SOPORTE_BIOMETRIA);
   }
 
   let credentialIdBytes;
@@ -206,8 +230,10 @@ export async function autenticarConBiometria() {
     throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
 
+  const rpId = obtenerRpIdActual();
   const publicKeyOptions = {
     challenge: crearChallengeAleatorio(),
+    ...(rpId ? { rpId } : {}),
     allowCredentials: [
       {
         id: credentialIdBytes,
@@ -222,7 +248,10 @@ export async function autenticarConBiometria() {
   let assertion = null;
   try {
     assertion = await navigator.credentials.get({ publicKey: publicKeyOptions });
-  } catch {
+  } catch (err) {
+    if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
+      throw new Error('Huella dactilar cancelada o no reconocida. La operación fue bloqueada por seguridad.');
+    }
     throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
 
@@ -247,12 +276,13 @@ export async function autenticarConBiometria() {
   // Verificar bandera UV (User Verified, bit 2 = 0x04 en el byte 32 de authenticatorData)
   const authData = new Uint8Array(assertion.response.authenticatorData);
   if (authData.byteLength < 37 || (authData[32] & 0x04) === 0) {
-    throw new Error(MENSAJE_FALLO_BIOMETRIA);
+    throw new Error('El dispositivo no confirmó la verificación biométrica del usuario. Operación bloqueada.');
   }
 
   return {
     ok: true,
     verified: true,
+    credentialId: perfil.credentialId,
     cuit: perfil.cuit,
     pin: perfil.pin,
     nombre: perfil.nombre
@@ -260,33 +290,65 @@ export async function autenticarConBiometria() {
 }
 
 /**
- * Verificación biométrica estricta antes de emitir una factura en Modo Automático.
- * - Si el dispositivo ya tiene huella/PIN vinculado para este CUIT, exige autenticarConBiometria().
- * - Si el dispositivo soporta WebAuthn pero aún no vinculó la huella, ejecuta un challenge
- *   platform con userVerification: 'required' para exigir huella / rostro / PIN del celular.
- * - Si el usuario cancela o falla, SIEMPRE lanza error y bloquea la emisión.
+ * Verificación biométrica OBLIGATORIA antes de emitir Factura C o Nota de Crédito C en modo AUTOMATICO_WS.
+ * SIN fallbacks ni bypasses:
+ * - Si el navegador/dispositivo no soporta WebAuthn o no tiene autenticador biométrico local -> rechaza con error.
+ * - Si ya existe una credencial guardada en este navegador para este dominio y CUIT -> ejecuta navigator.credentials.get()
+ *   con userVerification: 'required'.
+ * - Si todavía no existe credencial para este dominio y CUIT -> ejecuta navigator.credentials.create()
+ *   (platform authenticator, userVerification: 'required') para registrar y validar la huella del celular.
+ * - Si el usuario cancela o falla cualquier verificación -> SIEMPRE lanza error y bloquea la emisión.
  */
 export async function verificarBiometriaParaEmision({ cuit, pin, nombre }) {
+  if (!esEntornoWebAuthnValido()) {
+    throw new Error(MENSAJE_SIN_SOPORTE_BIOMETRIA);
+  }
+
+  const rpActual = obtenerRpIdActual();
   const perfil = obtenerPerfilBiometrico();
   const cuitPerfilLimpio = String(perfil?.cuit || '').replace(/\D/g, '');
   const cuitActualLimpio = String(cuit || '').replace(/\D/g, '');
-  if (perfil && cuitPerfilLimpio && cuitPerfilLimpio === cuitActualLimpio) {
+  const tieneCredencialParaEsteDominio = Boolean(
+    perfil &&
+      perfil.credentialId &&
+      perfil.rpId &&
+      perfil.rpId === rpActual &&
+      cuitPerfilLimpio &&
+      cuitPerfilLimpio === cuitActualLimpio
+  );
+
+  // 1. Si ya existe credencial para este dominio + CUIT -> invocar directamente credentials.get()
+  //    dentro del gesto de usuario (sin awaits previos que puedan invalidar la activación en Android).
+  if (tieneCredencialParaEsteDominio) {
     return autenticarConBiometria();
   }
 
-  const { disponible, motivo } = await verificarDisponibilidadBiometria();
-  if (!disponible) {
-    return { ok: false, fallbackPinRequerido: true, motivo };
+  // 2. Si no existe credencial guardada para este dominio -> validar soporte de autenticador local
+  //    y ejecutar credentials.create() con platform + userVerification: 'required'.
+  if (typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+    let disponible = false;
+    try {
+      disponible = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    } catch {
+      disponible = false;
+    }
+    if (!disponible) {
+      throw new Error(
+        'No se detectó huella dactilar ni autenticador biométrico activo en este dispositivo. No se puede emitir en modo automático sin biometría.'
+      );
+    }
   }
 
-  // Vincular y verificar en un solo paso exigiendo userVerification: 'required'
-  const nuevoPerfil = await registrarBiometriaDispositivo({ cuit, pin, nombre });
+  const nuevoPerfil = await registrarBiometriaDispositivo({ cuit: cuitActualLimpio, pin, nombre });
   if (!nuevoPerfil?.credentialId) {
     throw new Error(MENSAJE_FALLO_BIOMETRIA);
   }
+
   return {
     ok: true,
     verified: true,
+    registeredNow: true,
+    credentialId: nuevoPerfil.credentialId,
     cuit: nuevoPerfil.cuit,
     pin: nuevoPerfil.pin,
     nombre: nuevoPerfil.nombre

@@ -361,7 +361,9 @@ async function postAppsScript(action, cuit, pin, payload) {
   try {
     const json = JSON.parse(text);
     if (json && json.ok === false) {
-      throw new Error(json.error || 'El servidor devolvió un error al procesar la solicitud.');
+      const apiErr = new Error(json.error || 'El servidor devolvió un error al procesar la solicitud.');
+      apiErr.code = json.codigo || json.code || '';
+      throw apiErr;
     }
     return json;
   } catch (err) {

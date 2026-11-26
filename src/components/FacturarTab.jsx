@@ -81,8 +81,6 @@ export default function FacturarTab({
   const [avisoVoz, setAvisoVoz] = useState('');
   const [modalConfirmacion, setModalConfirmacion] = useState(false);
   const [errorModal, setErrorModal] = useState('');
-  const [pinConfirmacionManual, setPinConfirmacionManual] = useState('');
-  const [pedirPinFallback, setPedirPinFallback] = useState(false);
   const [verificandoBio, setVerificandoBio] = useState(false);
   const [enviando, setEnviando] = useState(false);
 
@@ -145,8 +143,6 @@ export default function FacturarTab({
     }
 
     setErrorModal('');
-    setPedirPinFallback(false);
-    setPinConfirmacionManual('');
     setModalConfirmacion(true);
   };
 
@@ -191,50 +187,42 @@ export default function FacturarTab({
   const handleConfirmarEnvio = async () => {
     setErrorModal('');
 
-    // En Modo Automático (AUTOMATICO_WS) se exige verificación biométrica (huella / rostro / PIN celular)
-    // antes de emitir tanto Factura C como Nota de Crédito C.
+    // En Modo Automático (AUTOMATICO_WS) se exige verificación biométrica OBLIGATORIA (WebAuthn)
+    // sin ningún fallback ni bypass, tanto para Factura C como para Nota de Crédito C.
     let verificadoBiometricamente = false;
+    let credentialIdVerificado = '';
     if (esModoAutomatico) {
-      if (pedirPinFallback) {
-        if (!pinConfirmacionManual.trim() || (sesionPin && pinConfirmacionManual.trim() !== String(sesionPin).trim())) {
-          setErrorModal(`El PIN ingresado no coincide con tu PIN de acceso. No se emitió la ${tipoComprobante}.`);
+      setVerificandoBio(true);
+      try {
+        const bioRes = await verificarBiometriaParaEmision({
+          cuit: cliente?.CUIT || '',
+          pin: sesionPin || '',
+          nombre: cliente?.Cliente || ''
+        });
+        if (!bioRes || bioRes.ok !== true || bioRes.verified !== true || !bioRes.credentialId) {
+          setErrorModal(
+            `No se pudo verificar tu huella dactilar. La emisión de la ${tipoComprobante} fue bloqueada por seguridad.`
+          );
           return;
         }
         verificadoBiometricamente = true;
-      } else {
-        setVerificandoBio(true);
-        try {
-          const bioRes = await verificarBiometriaParaEmision({
-            cuit: cliente?.CUIT || '',
-            pin: sesionPin || '',
-            nombre: cliente?.Cliente || ''
-          });
-          if (bioRes?.fallbackPinRequerido) {
-            setPedirPinFallback(true);
-            setErrorModal(
-              'Este dispositivo no tiene biometría activa. Confirmá con tu PIN de acceso para emitir en Modo Automático.'
-            );
-            setVerificandoBio(false);
-            return;
-          }
-          if (!bioRes?.ok || !bioRes?.verified) {
-            setErrorModal(
-              'No se pudo validar tu huella o PIN biométrico. La emisión automática fue cancelada por seguridad.'
-            );
-            setVerificandoBio(false);
-            return;
-          }
-          verificadoBiometricamente = true;
-        } catch (err) {
-          setErrorModal(
-            err?.message ||
-              'No se pudo validar la huella o el PIN del celular. La emisión automática fue cancelada.'
-          );
-          setVerificandoBio(false);
-          return;
-        } finally {
-          setVerificandoBio(false);
-        }
+        credentialIdVerificado = String(bioRes.credentialId);
+      } catch (err) {
+        setErrorModal(
+          err?.message ||
+            `No se pudo validar tu huella dactilar. La emisión de la ${tipoComprobante} fue bloqueada por seguridad.`
+        );
+        return;
+      } finally {
+        setVerificandoBio(false);
+      }
+
+      // Candado duro: jamás continuar si no quedó verificada la biometría
+      if (verificadoBiometricamente !== true || !credentialIdVerificado) {
+        setErrorModal(
+          `Emisión bloqueada: se requiere huella dactilar verificada para emitir la ${tipoComprobante}.`
+        );
+        return;
       }
     }
 
@@ -260,14 +248,13 @@ export default function FacturarTab({
         arcaDirectMode: esModoAutomatico,
         modalidadArca: cliente?.Modalidad_ARCA || (esModoAutomatico ? 'AUTOMATICO_WS' : 'MANUAL_WEB'),
         modoFacturacion: esModoAutomatico ? 'AUTOMATICO_WS' : 'MANUAL_WEB',
-        verificacionBiometrica: verificadoBiometricamente
+        verificacionBiometrica: verificadoBiometricamente,
+        biometricCredentialId: credentialIdVerificado
       });
       setModalConfirmacion(false);
       setDescripcion('');
       setImporteStr('');
       setFacturaAsociada('');
-      setPinConfirmacionManual('');
-      setPedirPinFallback(false);
       if (receptorTipo === 'CUIT / DNI específico') {
         setReceptorDocumento('');
         setReceptorNombre('');
@@ -691,22 +678,6 @@ export default function FacturarTab({
                 </div>
               )}
 
-              {pedirPinFallback && esModoAutomatico && (
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-extrabold text-petroleo">
-                    Confirmá tu PIN de acceso para emitir
-                  </label>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    value={pinConfirmacionManual}
-                    onChange={(e) => setPinConfirmacionManual(e.target.value)}
-                    placeholder="Ingresá tu PIN de acceso..."
-                    className="w-full px-3.5 py-2.5 rounded-xl border-2 border-petroleo/40 bg-white text-sm font-bold focus:outline-none focus:border-petroleo"
-                  />
-                </div>
-              )}
-
               {errorModal && (
                 <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -761,15 +732,13 @@ export default function FacturarTab({
                   {esModoAutomatico && <Fingerprint className="w-4 h-4 shrink-0" />}
                   <span>
                     {verificandoBio
-                      ? 'Validando huella / PIN...'
+                      ? 'Validando huella...'
                       : enviando
                         ? esModoAutomatico
                           ? 'Emitiendo en ARCA...'
                           : 'Enviando...'
                         : esModoAutomatico
-                          ? pedirPinFallback
-                            ? 'Confirmar con PIN y Emitir'
-                            : 'Validar huella y Emitir'
+                          ? 'Validar huella y Emitir'
                           : 'Confirmar envío'}
                   </span>
                 </button>

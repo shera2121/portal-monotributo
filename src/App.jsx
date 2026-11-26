@@ -307,12 +307,42 @@ export default function App() {
   };
 
   const handleSolicitarFactura = async (payload) => {
+    const esClienteAutomatico = Boolean(
+      clienteActual?.facturacionAutomatica ||
+        /autom[aá]tico|automatico_ws|direct/i.test(
+          String(clienteActual?.Modalidad_ARCA || clienteActual?.Modo_Facturacion || '')
+        )
+    );
+    if (
+      esClienteAutomatico &&
+      (payload?.verificacionBiometrica !== true || !payload?.biometricCredentialId)
+    ) {
+      const msgBloqueo =
+        'Emisión bloqueada por seguridad: se requiere validación biométrica (huella dactilar) para emitir en modo AUTOMATICO_WS.';
+      mostrarToast(msgBloqueo, 'error');
+      throw new Error(msgBloqueo);
+    }
+
+    // Sincronizar estado local de perfil biométrico si se registró recién durante la emisión
+    const perfilActualizado = obtenerPerfilBiometrico();
+    if (perfilActualizado) {
+      setPerfilBiometrico(perfilActualizado);
+    }
+
     try {
       const res = await requestInvoice({ cuit: sesion.cuit, pin: sesion.pin, payload });
       if (res?.portalData) {
         setPortalData(res.portalData);
       } else {
         await cargarDatosCliente(sesion, { silencioso: true });
+      }
+      if (res?.pendientePorWsaa || res?.codigo === 'WSAA_TA_YA_VIGENTE') {
+        mostrarToast(
+          res?.message ||
+            `${payload.tipoComprobante} resguardada como “Pendiente” porque ARCA tiene una sesión previa activa.`,
+          'error'
+        );
+        return res;
       }
       const nroEmitido = res?.nroFormateado || res?.ncFormateada || '';
       const fueEmitida =
