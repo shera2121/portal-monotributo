@@ -60,7 +60,9 @@ export default function FacturarTab({
   const esModoAutomatico = Boolean(
     ARCA_DIRECT_MODE ||
       cliente?.facturacionAutomatica ||
-      /auto|direct/i.test(String(cliente?.Modo_Facturacion || ''))
+      /autom[aá]tico|automatico_ws|direct/i.test(
+        String(cliente?.Modalidad_ARCA || cliente?.Modo_Facturacion || '')
+      )
   );
 
   const [tipoComprobante, setTipoComprobante] = useState('Factura C');
@@ -189,12 +191,13 @@ export default function FacturarTab({
   const handleConfirmarEnvio = async () => {
     setErrorModal('');
 
-    // En Modo Automático se exige verificación biométrica (huella / rostro / PIN celular) antes de emitir
+    // En Modo Automático (AUTOMATICO_WS) se exige verificación biométrica (huella / rostro / PIN celular)
+    // antes de emitir tanto Factura C como Nota de Crédito C.
     let verificadoBiometricamente = false;
     if (esModoAutomatico) {
       if (pedirPinFallback) {
         if (!pinConfirmacionManual.trim() || (sesionPin && pinConfirmacionManual.trim() !== String(sesionPin).trim())) {
-          setErrorModal('El PIN ingresado no coincide con tu PIN de acceso. No se emitió la factura.');
+          setErrorModal(`El PIN ingresado no coincide con tu PIN de acceso. No se emitió la ${tipoComprobante}.`);
           return;
         }
         verificadoBiometricamente = true;
@@ -255,7 +258,8 @@ export default function FacturarTab({
         importe: importeNum,
         estado: 'Solicitada',
         arcaDirectMode: esModoAutomatico,
-        modoFacturacion: esModoAutomatico ? 'Automatico' : 'Manual',
+        modalidadArca: cliente?.Modalidad_ARCA || (esModoAutomatico ? 'AUTOMATICO_WS' : 'MANUAL_WEB'),
+        modoFacturacion: esModoAutomatico ? 'AUTOMATICO_WS' : 'MANUAL_WEB',
         verificacionBiometrica: verificadoBiometricamente
       });
       setModalConfirmacion(false);
@@ -268,6 +272,8 @@ export default function FacturarTab({
         setReceptorDocumento('');
         setReceptorNombre('');
       }
+    } catch (err) {
+      setErrorModal(err?.message || `No se pudo procesar la ${tipoComprobante}.`);
     } finally {
       setEnviando(false);
     }
@@ -567,7 +573,7 @@ export default function FacturarTab({
             type="submit"
             className="w-full py-4 rounded-2xl bg-ladrillo hover:bg-ladrillo-dark text-white font-extrabold text-sm shadow-md transition active:scale-[0.99]"
           >
-            Revisar y Solicitar {tipoComprobante}
+            Solicitar {tipoComprobante}
           </button>
         </form>
       </section>
@@ -667,31 +673,23 @@ export default function FacturarTab({
             </div>
 
             <div className="p-5 space-y-4">
-              <div
-                className={`rounded-2xl p-3 flex items-start gap-2.5 text-xs border ${
-                  esModoAutomatico
-                    ? 'bg-petroleo-50 border-petroleo/25 text-petroleo'
-                    : 'bg-hueso/80 border-hueso-border text-petroleo'
-                }`}
-              >
-                {esModoAutomatico ? (
-                  <Fingerprint className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
-                ) : (
+              {/* En modo MANUAL_WEB muestra el cartel amarillo de revisión del estudio; en AUTOMATICO_WS se oculta */}
+              {!esModoAutomatico ? (
+                <div className="rounded-2xl p-3 flex items-start gap-2.5 text-xs border bg-hueso/80 border-hueso-border text-petroleo">
                   <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
-                )}
-                <p>
-                  {esModoAutomatico ? (
-                    <>
-                      <strong>Modo Automático con seguridad biométrica:</strong> al confirmar te pediremos tu{' '}
-                      <strong>huella, rostro o PIN del celular</strong> antes de disparar la emisión en ARCA.
-                    </>
-                  ) : (
-                    <>
-                      Por seguridad, el comprobante se envía como <strong>“Solicitada”</strong> para que el estudio verifique los datos antes de emitir en ARCA.
-                    </>
-                  )}
-                </p>
-              </div>
+                  <p>
+                    Por seguridad, el comprobante se envía como <strong>“Solicitada”</strong> para que el estudio verifique los datos antes de emitir en ARCA.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl p-3 flex items-start gap-2.5 text-xs border bg-petroleo-50 border-petroleo/25 text-petroleo">
+                  <Fingerprint className="w-4 h-4 shrink-0 mt-0.5 text-ladrillo" />
+                  <p>
+                    <strong>Emisión automática ARCA con seguridad biométrica:</strong> al confirmar te pediremos tu{' '}
+                    <strong>huella, rostro o PIN del celular</strong> antes de emitir la <strong>{tipoComprobante}</strong>.
+                  </p>
+                </div>
+              )}
 
               {pedirPinFallback && esModoAutomatico && (
                 <div className="space-y-1.5">
@@ -765,9 +763,13 @@ export default function FacturarTab({
                     {verificandoBio
                       ? 'Validando huella / PIN...'
                       : enviando
-                        ? 'Enviando...'
+                        ? esModoAutomatico
+                          ? 'Emitiendo en ARCA...'
+                          : 'Enviando...'
                         : esModoAutomatico
-                          ? 'Validar huella y Emitir'
+                          ? pedirPinFallback
+                            ? 'Confirmar con PIN y Emitir'
+                            : 'Validar huella y Emitir'
                           : 'Confirmar envío'}
                   </span>
                 </button>

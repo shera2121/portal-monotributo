@@ -168,7 +168,24 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
 function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
   // 1. Nuevo formato estructurado: { cliente, resumen12Meses, ventas, comprasGastos, alertasArca }
   if (data && !Array.isArray(data) && data.cliente) {
-    const cli = normalizarCliente(data.cliente);
+    const clienteConModalidad = {
+      ...data.cliente,
+      Modalidad_ARCA:
+        data.cliente.Modalidad_ARCA ??
+        data.cliente.modalidad_arca ??
+        data.cliente.modalidadArca ??
+        data.Modalidad_ARCA ??
+        data.modalidad_arca ??
+        data.modalidadArca,
+      Modo_Facturacion:
+        data.cliente.Modo_Facturacion ??
+        data.cliente.modoFacturacion ??
+        data.Modo_Facturacion ??
+        data.modoFacturacion,
+      facturacionAutomatica:
+        data.cliente.facturacionAutomatica ?? data.facturacionAutomatica
+    };
+    const cli = normalizarCliente(clienteConModalidad);
     const resumen = data.resumen12Meses || {
       ventasAcumuladas: cli.Total_Ventas_Facturadas,
       comprasGastosAcumulados: cli.Total_Compras_Gastos,

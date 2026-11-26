@@ -268,7 +268,9 @@ export async function autenticarConBiometria() {
  */
 export async function verificarBiometriaParaEmision({ cuit, pin, nombre }) {
   const perfil = obtenerPerfilBiometrico();
-  if (perfil && String(perfil.cuit) === String(cuit)) {
+  const cuitPerfilLimpio = String(perfil?.cuit || '').replace(/\D/g, '');
+  const cuitActualLimpio = String(cuit || '').replace(/\D/g, '');
+  if (perfil && cuitPerfilLimpio && cuitPerfilLimpio === cuitActualLimpio) {
     return autenticarConBiometria();
   }
 

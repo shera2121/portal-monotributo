@@ -314,9 +314,20 @@ export default function App() {
       } else {
         await cargarDatosCliente(sesion, { silencioso: true });
       }
-      mostrarToast(`${payload.tipoComprobante} enviada con estado “Solicitada”.`);
+      const nroEmitido = res?.nroFormateado || res?.ncFormateada || '';
+      const fueEmitida =
+        Boolean(res?.cae) || String(res?.estado || '').toUpperCase().includes('EMITIDA');
+      if (fueEmitida) {
+        mostrarToast(
+          `${payload.tipoComprobante}${nroEmitido ? ` N° ${nroEmitido}` : ''} emitida en ARCA${res?.cae ? ` (CAE: ${res.cae})` : ''}.`
+        );
+      } else {
+        mostrarToast(`${payload.tipoComprobante} enviada con estado “Solicitada”.`);
+      }
+      return res;
     } catch (err) {
       mostrarToast(err.message || 'Error al solicitar el comprobante.', 'error');
+      throw err;
     }
   };
 

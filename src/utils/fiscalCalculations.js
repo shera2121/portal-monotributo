@@ -128,6 +128,24 @@ export const normalizarCliente = (raw = {}, index = 0) => {
     Math.min(28, Math.max(1, Math.round(diaVenc)))
   ).padStart(2, '0')}`;
 
+  const modalidadArcaRaw = String(
+    raw.Modalidad_ARCA ||
+      raw.modalidad_arca ||
+      raw.modalidadArca ||
+      raw['Modalidad ARCA'] ||
+      raw.Modalidad ||
+      raw.modalidad ||
+      raw.Modo_Facturacion ||
+      raw.modoFacturacion ||
+      raw['Modo Facturación'] ||
+      raw['Modo Facturacion'] ||
+      'MANUAL_WEB'
+  ).trim();
+
+  const esAutomaticoWs =
+    Boolean(raw.facturacionAutomatica) ||
+    /autom[aá]tico|automatico_ws|direct/i.test(modalidadArcaRaw);
+
   return {
     Cliente: String(raw.Cliente || raw.nombre || raw['Cliente (Telegram)'] || raw['Nombre'] || `Cliente #${index + 1}`).trim(),
     NombreFantasia: String(raw.NombreFantasia || raw.nombreFantasia || '').trim(),
@@ -152,24 +170,9 @@ export const normalizarCliente = (raw = {}, index = 0) => {
       0
     ),
     Estado_Pago: String(raw.Estado_Pago || raw.estadoPago || raw['Estado Mes'] || raw['Estado Mes Actual'] || 'PENDIENTE').trim(),
-    Modo_Facturacion: String(
-      raw.Modo_Facturacion ||
-        raw.modoFacturacion ||
-        raw['Modo Facturación'] ||
-        raw['Modo Facturacion'] ||
-        'Manual'
-    ).trim(),
-    facturacionAutomatica:
-      Boolean(raw.facturacionAutomatica) ||
-      /auto|direct/i.test(
-        String(
-          raw.Modo_Facturacion ||
-            raw.modoFacturacion ||
-            raw['Modo Facturación'] ||
-            raw['Modo Facturacion'] ||
-            ''
-        )
-      ),
+    Modalidad_ARCA: modalidadArcaRaw,
+    Modo_Facturacion: modalidadArcaRaw,
+    facturacionAutomatica: esAutomaticoWs,
     Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim(),
     Link_Privado: String(raw.Link_Privado || '').trim(),
     vepDisponible: raw.vepDisponible || null,
