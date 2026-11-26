@@ -37,8 +37,7 @@ import {
 import {
   compartirDocumento,
   descargarBlob,
-  generarPdfConstancia,
-  generarPdfVep
+  generarPdfConstancia
 } from '../utils/documentHelpers.js';
 import {
   guardarEstadoPushLocal,
@@ -112,29 +111,34 @@ export default function InicioTab({
   };
 
   const handleDescargarDocumentoPdf = (doc) => {
-    if (!doc?.pdfUrl) return;
-    // En modo demo, si el link es ficticio (demo-*), generar PDF real descargable
-    if (doc.pdfUrl.includes('/demo-')) {
+    const linkFinal = doc?.urlDescarga || doc?.pdfUrl || doc?.urlVista;
+    if (!linkFinal) return;
+    if (linkFinal.includes('/demo-')) {
       const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
-      const blob = esVep ? generarPdfVep(cliente) : generarPdfConstancia(cliente);
+      if (esVep) {
+        onToast('En modo producción este botón descarga directamente el PDF real del VEP desde Google Drive.');
+        return;
+      }
+      const blob = generarPdfConstancia(cliente);
       descargarBlob(blob, `${String(doc.tipo || 'Documento').replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`);
       onToast('PDF descargado en tu dispositivo.');
       return;
     }
-    window.open(doc.pdfUrl, '_blank', 'noopener,noreferrer');
+    window.open(linkFinal, '_blank', 'noopener,noreferrer');
     onToast('Abriendo PDF para descargar...');
   };
 
   const handleCompartirDocumentoPdf = async (doc) => {
-    if (!doc?.pdfUrl) return;
-    const esDemoLink = doc.pdfUrl.includes('/demo-');
+    const linkCompartir = doc?.urlVista || doc?.pdfUrl || doc?.urlDescarga;
+    if (!linkCompartir) return;
+    const esDemoLink = linkCompartir.includes('/demo-');
     const esVep = String(doc.tipo || '').toLowerCase().includes('vep');
-    const blob = esDemoLink ? (esVep ? generarPdfVep(cliente) : generarPdfConstancia(cliente)) : null;
+    const blob = esDemoLink && !esVep ? generarPdfConstancia(cliente) : null;
 
     const res = await compartirDocumento({
       titulo: `${doc.tipo} — ${cliente.Cliente}`,
       texto: `${doc.tipo}${doc.detalle ? ` (${doc.detalle})` : ''} — GR Estudio Impositivo Digital`,
-      url: esDemoLink ? undefined : doc.pdfUrl,
+      url: esDemoLink ? undefined : linkCompartir,
       blob,
       nombreArchivo: `${String(doc.tipo || 'Documento').replace(/\s+/g, '_')}_${cliente.CUIT}.pdf`
     });
@@ -214,15 +218,50 @@ export default function InicioTab({
             pill: 'bg-red-50 text-red-800 border-red-200'
           };
 
+  // VEP real desde Google Drive (sin PDF inventado) + estado de solicitud en proceso
+  const vepReal =
+    cliente?.vepDisponible &&
+    (cliente.vepDisponible.urlDescarga ||
+      cliente.vepDisponible.downloadUrl ||
+      cliente.vepDisponible.urlPdf ||
+      cliente.vepDisponible.urlVista)
+      ? cliente.vepDisponible
+      : null;
+
+  const vepPendiente = Boolean(
+    cliente?.vepSolicitadoPendiente || cliente?.solicitudVepPendiente
+  );
+
   const handleDescargarVep = () => {
-    if (cliente?.vepDisponible?.urlPdf) {
-      window.open(cliente.vepDisponible.urlPdf, '_blank', 'noopener,noreferrer');
-      onToast('Abriendo último VEP disponible...');
+    const linkDescarga =
+      vepReal?.urlDescarga ||
+      vepReal?.downloadUrl ||
+      vepReal?.urlPdf ||
+      vepReal?.urlVista ||
+      '';
+    if (!linkDescarga) {
+      onToast('Todavía no tenés un VEP real disponible para descargar.', 'error');
       return;
     }
-    const blob = generarPdfVep(cliente);
-    descargarBlob(blob, `VEP_${cliente.CUIT}_${cliente.vepDisponible?.periodo || getPeriodoActual()}.pdf`);
-    onToast('Último VEP descargado en PDF.');
+    window.open(linkDescarga, '_blank', 'noopener,noreferrer');
+    onToast('Descargando último VEP desde Google Drive...');
+  };
+
+  const handleCompartirVepReal = async () => {
+    const linkVep = vepReal?.urlVista || vepReal?.urlPdf || vepReal?.urlDescarga || '';
+    if (!linkVep) return;
+    const res = await compartirDocumento({
+      titulo: `VEP ${vepReal.impuesto || 'Monotributo'} — ${cliente.Cliente}`,
+      texto: `VEP ${vepReal.impuesto || 'Monotributo'}${vepReal.periodo ? ` (Período ${vepReal.periodo})` : ''} — ${vepReal.redPago || ''}`,
+      url: linkVep
+    });
+    if (res.shared) {
+      onToast(
+        res.method === 'clipboard-fallback'
+          ? 'Enlace del VEP copiado para compartir.'
+          : 'Enlace del VEP listo para compartir.'
+      );
+    }
   };
 
   const handleEnviarSolicitudVep = async (e) => {
@@ -1131,33 +1170,95 @@ export default function InicioTab({
             </div>
 
             <div className="p-5 space-y-5">
-              {/* Descargar último VEP disponible */}
+              {/* Cuadro amarillo: ÚLTIMO VEP DISPONIBLE (solo PDF real de Google Drive) */}
               <div className="bg-hueso/70 border border-hueso-border rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-extrabold uppercase tracking-wider text-petroleo">
                     Último VEP disponible
                   </span>
-                  <span className="text-[11px] font-bold text-slate-600">
-                    Período {cliente.vepDisponible?.periodo || getPeriodoActual()}
-                  </span>
+                  {vepReal?.periodo && (
+                    <span className="text-[11px] font-bold text-slate-600">
+                      Período {vepReal.periodo}
+                    </span>
+                  )}
                 </div>
-                <div>
-                  <p className="text-sm font-black text-slate-900">
-                    {cliente.vepDisponible?.impuesto || 'Monotributo Mensual'}
-                  </p>
-                  <p className="text-xs text-slate-700 mt-0.5">
-                    Importe: <strong>{formatARS(cliente.vepDisponible?.importe || cliente.Importe_Cuota)}</strong> • Red:{' '}
-                    <strong>{cliente.vepDisponible?.redPago || 'PagoMisCuentas'}</strong>
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleDescargarVep}
-                  className="w-full py-3 px-4 rounded-xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs flex items-center justify-center gap-2 shadow-sm transition"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Descargar último VEP en PDF</span>
-                </button>
+
+                {vepReal ? (
+                  <>
+                    <div>
+                      <p className="text-sm font-black text-slate-900">
+                        {vepReal.impuesto || 'Monotributo'}
+                      </p>
+                      <p className="text-xs text-slate-700 mt-0.5">
+                        {Number(vepReal.importe) > 0 && (
+                          <>
+                            Importe: <strong>{formatARS(vepReal.importe)}</strong> •{' '}
+                          </>
+                        )}
+                        Red: <strong>{vepReal.redPago || 'PagoMisCuentas'}</strong>
+                        {vepReal.fecha ? ` • Enviado: ${formatFechaAR(vepReal.fecha)}` : ''}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDescargarVep}
+                        className="w-full py-3 px-3.5 rounded-xl bg-petroleo hover:bg-petroleo-dark text-white font-extrabold text-xs flex items-center justify-center gap-2 shadow-sm transition"
+                      >
+                        <Download className="w-4 h-4 shrink-0" />
+                        <span>Descargar último VEP en PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCompartirVepReal}
+                        className="w-full py-3 px-3.5 rounded-xl bg-white hover:bg-petroleo-50 text-petroleo border border-petroleo/25 font-extrabold text-xs flex items-center justify-center gap-2 transition"
+                      >
+                        <Share2 className="w-4 h-4 shrink-0" />
+                        <span>Compartir enlace PDF</span>
+                      </button>
+                    </div>
+
+                    {vepPendiente && (
+                      <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] font-bold text-amber-900 flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>
+                          Tu nueva solicitud de VEP
+                          {cliente.solicitudVepPendiente?.periodo
+                            ? ` (${cliente.solicitudVepPendiente.periodo})`
+                            : ''}{' '}
+                          está en proceso.
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : vepPendiente ? (
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 space-y-1">
+                    <p className="font-extrabold flex items-center gap-1.5 text-amber-900">
+                      <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Tu solicitud de VEP está en proceso</span>
+                    </p>
+                    <p className="text-[11px] text-amber-900/90 leading-snug">
+                      El estudio ya recibió tu pedido
+                      {cliente.solicitudVepPendiente?.impuesto
+                        ? ` de ${cliente.solicitudVepPendiente.impuesto}`
+                        : ''}
+                      {cliente.solicitudVepPendiente?.periodo
+                        ? ` (Período ${cliente.solicitudVepPendiente.periodo})`
+                        : ''}
+                      . Te avisaremos apenas subamos el PDF de ARCA para descargar.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-white/80 border border-hueso-border text-xs text-slate-700 space-y-1">
+                    <p className="font-extrabold text-petroleo">
+                      Todavía no tenés un VEP disponible para descargar
+                    </p>
+                    <p className="text-[11px] text-slate-600 leading-snug">
+                      Completá el formulario de abajo para pedirle al estudio tu VEP de Monotributo, DGR Salta o Convenio Multilateral.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Solicitar nuevo VEP */}

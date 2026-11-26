@@ -176,6 +176,8 @@ export const normalizarCliente = (raw = {}, index = 0) => {
     Ultimo_Comprobante_Bot: String(raw.Ultimo_Comprobante_Bot || raw['Diagnóstico Monotributo'] || '🟢 DENTRO DEL LÍMITE').trim(),
     Link_Privado: String(raw.Link_Privado || '').trim(),
     vepDisponible: raw.vepDisponible || null,
+    vepSolicitadoPendiente: Boolean(raw.vepSolicitadoPendiente),
+    solicitudVepPendiente: raw.solicitudVepPendiente || null,
     constanciaDisponible: raw.constanciaDisponible || null
   };
 };

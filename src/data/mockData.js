@@ -47,16 +47,9 @@ export function crearDatosDemoIniciales() {
       Total_Compras_Gastos: 12650000,
       Ultimo_Comprobante_Bot: '🟢 DENTRO DEL LÍMITE',
       Link_Privado: '',
-      vepDisponible: {
-        numeroVep: '482910445',
-        impuesto: 'Monotributo Integrado (ARCA + IIBB Salta)',
-        periodo: '2026-11',
-        vencimiento: '2026-11-20',
-        importe: 102612.93,
-        redPago: 'PagoMisCuentas',
-        estado: 'Disponible para pago',
-        urlPdf: ''
-      },
+      vepDisponible: null,
+      vepSolicitadoPendiente: false,
+      solicitudVepPendiente: null,
       constanciaDisponible: {
         tipo: 'Constancia de Opción Monotributo e Inscripción ARCA',
         fechaEmision: '2026-11-02',

@@ -110,25 +110,6 @@ export function generarPdfConstancia(cliente) {
   });
 }
 
-export function generarPdfVep(cliente) {
-  const c = cliente || {};
-  const vep = c.vepDisponible || {};
-  return generarPdfResumenBlob({
-    titulo: 'VOLANTE ELECTRONICO DE PAGO (VEP)',
-    subtitulo: vep.impuesto || 'Monotributo Integrado (ARCA + IIBB Salta)',
-    lineas: [
-      { etiqueta: 'Nro. de VEP', valor: vep.numeroVep || 'Pendiente' },
-      { etiqueta: 'Contribuyente', valor: c.Cliente || 'Contribuyente' },
-      { etiqueta: 'CUIT', valor: formatCUIT(c.CUIT) },
-      { etiqueta: 'Periodo Fiscal', valor: vep.periodo || '' },
-      { etiqueta: 'Fecha Vencimiento', valor: formatFechaAR(vep.vencimiento || c.Fecha_Proximo_Vencimiento) },
-      { etiqueta: 'Importe a Abonar', valor: formatARS(vep.importe || c.Importe_Cuota) },
-      { etiqueta: 'Red de Pago', valor: vep.redPago || 'PagoMisCuentas' },
-      { etiqueta: 'Estado', valor: vep.estado || c.Estado_Pago || 'PENDIENTE' }
-    ]
-  });
-}
-
 export function generarPdfComprobante(item, tipoSeccion, cliente) {
   if (tipoSeccion === 'ventas') {
     return generarPdfResumenBlob({

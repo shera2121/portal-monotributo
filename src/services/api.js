@@ -65,16 +65,35 @@ export function resetearDatosDemo() {
   return inicial;
 }
 
-function extraerUrlPdfDesdeTexto(texto = '') {
+function extraerLinksDriveDeTexto(texto = '') {
   const str = String(texto || '');
-  const match = str.match(/https?:\/\/[^\s"'<>]+/i);
-  if (!match) return '';
-  return match[0].replace(/[.,;)\]]+$/, '');
+  const matchVista = str.match(/https?:\/\/drive\.google\.com\/file\/d\/([-\w]{20,})[^\s"'<>|]*/i);
+  const matchDescarga = str.match(/https?:\/\/drive\.google\.com\/uc\?[^\s"'<>|]*id=([-\w]{20,})[^\s"'<>|]*/i);
+  const matchGeneral = str.match(/https?:\/\/[^\s"'<>|]+/i);
+
+  const limpiar = (u) => String(u || '').replace(/[.,;)\]]+$/, '').trim();
+  const fileId = (matchVista && matchVista[1]) || (matchDescarga && matchDescarga[1]) || '';
+
+  const urlVista = matchVista
+    ? limpiar(matchVista[0])
+    : fileId
+      ? `https://drive.google.com/file/d/${fileId}/view?usp=sharing`
+      : matchGeneral
+        ? limpiar(matchGeneral[0])
+        : '';
+
+  const urlDescarga = matchDescarga
+    ? limpiar(matchDescarga[0])
+    : fileId
+      ? `https://drive.google.com/uc?export=download&id=${fileId}`
+      : urlVista;
+
+  return { fileId, urlVista, urlDescarga };
 }
 
 /**
  * Normaliza el listado de "Solicitudes App PWA" / documentos filtrando por CUIT del cliente
- * y extrayendo automáticamente el enlace de PDF desde Observaciones cuando exista.
+ * y extrayendo automáticamente los enlaces de vista y descarga de Drive desde Observaciones.
  */
 function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
   const bruto =
@@ -108,6 +127,7 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
       const pdfUrlDirecta = String(
         row.pdfUrl ||
           row.urlPdf ||
+          row.urlVista ||
           row.enlacePdf ||
           row.linkPdf ||
           row.archivoUrl ||
@@ -115,14 +135,22 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
           ''
       ).trim();
 
-      const pdfUrl = pdfUrlDirecta || extraerUrlPdfDesdeTexto(observaciones);
-      const observacionesLimpias = pdfUrl
-        ? observaciones
-            .replace(pdfUrl, '')
-            .replace(/\b(pdf|link|enlace|archivo)\s*:?\s*$/i, '')
-            .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, '')
-            .trim()
-        : observaciones;
+      const downloadUrlDirecta = String(
+        row.urlDescarga || row.downloadUrl || ''
+      ).trim();
+
+      const linksExtraidos = extraerLinksDriveDeTexto(observaciones);
+      const urlVista = pdfUrlDirecta || linksExtraidos.urlVista;
+      const urlDescarga = downloadUrlDirecta || linksExtraidos.urlDescarga || urlVista;
+      const pdfUrl = urlVista || urlDescarga;
+
+      const observacionesLimpias = observaciones
+        .replace(/https?:\/\/[^\s"'<>|]+/gi, '')
+        .replace(/\b(descarga|pdf|link|enlace|archivo)\s*:?/gi, '')
+        .replace(/[|]+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, '')
+        .trim();
 
       return {
         id: String(row.id || row.ID || row.Id || `SOL-${idx + 1}`),
@@ -140,11 +168,15 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
           row.tipo ||
             row.Tipo ||
             row.tramite ||
+            row['Tipo Trámite'] ||
             row['Tipo de Solicitud'] ||
             row['Trámite'] ||
             row.impuesto ||
             'Documento'
         ).trim(),
+        impuesto: String(row.impuesto || row.Impuesto || row.detalle || row.Detalle || '').trim(),
+        periodo: String(row.periodo || row.Período || row.Periodo || '').trim(),
+        redPago: String(row.redPago || row['Red de Pago'] || row.red || '').trim(),
         detalle: String(
           row.detalle ||
             row.Detalle ||
@@ -157,9 +189,48 @@ function normalizarSolicitudesDocumentos(data = {}, cuitCliente = '') {
         estado: String(row.estado || row.Estado || 'Solicitado').trim(),
         observaciones,
         observacionesLimpias,
-        pdfUrl
+        pdfUrl,
+        urlVista,
+        urlDescarga
       };
     });
+}
+
+function derivarEstadoVepDesdeSolicitudes(solicitudes = [], cuotaFallback = 0) {
+  let ultimoEnviado = null;
+  let ultimoPendiente = null;
+
+  solicitudes.forEach((doc) => {
+    if (!/\bvep\b/i.test(String(doc.tipo || ''))) return;
+    const estLower = String(doc.estado || '').toLowerCase();
+    const linkVista = doc.urlVista || doc.pdfUrl || '';
+    const linkDescarga = doc.urlDescarga || doc.pdfUrl || '';
+
+    if (estLower.startsWith('enviad') && (linkVista || linkDescarga) && !linkVista.includes('/demo-')) {
+      ultimoEnviado = {
+        fecha: doc.fecha,
+        impuesto: doc.impuesto || doc.detalle || 'Monotributo',
+        periodo: doc.periodo || '',
+        redPago: doc.redPago || 'PagoMisCuentas',
+        importe: /monotributo/i.test(doc.impuesto || doc.detalle || doc.tipo) ? Number(cuotaFallback) || 0 : 0,
+        estado: 'Enviado',
+        urlVista: linkVista,
+        urlDescarga: linkDescarga || linkVista,
+        urlPdf: linkVista || linkDescarga,
+        downloadUrl: linkDescarga || linkVista
+      };
+    } else if (estLower.includes('solicitad') || estLower.includes('pendiente') || estLower.includes('proceso')) {
+      ultimoPendiente = {
+        fecha: doc.fecha,
+        impuesto: doc.impuesto || doc.detalle || 'Monotributo',
+        periodo: doc.periodo || '',
+        redPago: doc.redPago || '',
+        estado: doc.estado || 'Solicitado'
+      };
+    }
+  });
+
+  return { ultimoEnviado, ultimoPendiente };
 }
 
 /**
@@ -183,7 +254,17 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
         data.Modo_Facturacion ??
         data.modoFacturacion,
       facturacionAutomatica:
-        data.cliente.facturacionAutomatica ?? data.facturacionAutomatica
+        data.cliente.facturacionAutomatica ?? data.facturacionAutomatica,
+      vepDisponible:
+        data.cliente.vepDisponible !== undefined ? data.cliente.vepDisponible : data.vepDisponible,
+      vepSolicitadoPendiente:
+        data.cliente.vepSolicitadoPendiente !== undefined
+          ? data.cliente.vepSolicitadoPendiente
+          : data.vepSolicitadoPendiente,
+      solicitudVepPendiente:
+        data.cliente.solicitudVepPendiente !== undefined
+          ? data.cliente.solicitudVepPendiente
+          : data.solicitudVepPendiente
     };
     const cli = normalizarCliente(clienteConModalidad);
     const resumen = data.resumen12Meses || {
@@ -200,6 +281,23 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
     }
 
     const solicitudesNorm = normalizarSolicitudesDocumentos(data, cli.CUIT || cuitBuscado);
+
+    // Respaldo inteligente: si el backend todavía no pobló vepDisponible / vepSolicitadoPendiente, derivarlo de Solicitudes App PWA
+    const vepTieneLinkReal = Boolean(
+      cli.vepDisponible &&
+        (cli.vepDisponible.urlDescarga ||
+          cli.vepDisponible.downloadUrl ||
+          cli.vepDisponible.urlVista ||
+          cli.vepDisponible.urlPdf)
+    );
+    const derivado = derivarEstadoVepDesdeSolicitudes(solicitudesNorm, cli.Importe_Cuota);
+    if (!vepTieneLinkReal) {
+      cli.vepDisponible = derivado.ultimoEnviado || null;
+    }
+    if (!cli.vepSolicitadoPendiente && derivado.ultimoPendiente) {
+      cli.vepSolicitadoPendiente = true;
+      cli.solicitudVepPendiente = derivado.ultimoPendiente;
+    }
 
     return {
       cliente: cli,
@@ -571,6 +669,14 @@ export async function requestVep({ cuit, pin, payload }) {
       estado: 'Solicitado'
     };
     db.solicitudesTramites = [solicitud, ...(db.solicitudesTramites || [])];
+    db.cliente.vepSolicitadoPendiente = true;
+    db.cliente.solicitudVepPendiente = {
+      fecha: getHoyISO(),
+      impuesto: payload.impuesto,
+      periodo: payload.periodo,
+      redPago: payload.redPago,
+      estado: 'Solicitado'
+    };
     db.alertasArca = [
       {
         id: `AL-${Date.now()}`,
