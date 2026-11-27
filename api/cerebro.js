@@ -2,12 +2,13 @@
  * ============================================================================
  * VERCEL SERVERLESS FUNCTION — GR CEREBRO CENTRAL DE IA (/api/cerebro)
  * ============================================================================
- * Etapa 3: Motor Gemini API (gemini-2.5-flash) con Function Calling estricto
+ * Etapa 3: Motor Gemini API (gemini-3.8-flash) con Function Calling estricto
  * de Nivel 1 (Solo Lectura) para el módulo /admin.
  *
  * Variables de entorno requeridas en Vercel (Settings -> Environment Variables):
  *  - GEMINI_API_KEY   : API Key de Google AI Studio / Gemini API
  *  - APPS_SCRIPT_URL  : URL /exec de la Web App de Google Apps Script del estudio
+ *  - GEMINI_MODEL     : (Opcional) Modelo Gemini a utilizar (por defecto: gemini-3.8-flash)
  *
  * Seguridad:
  *  - Verifica sessionToken contra Apps Script (admin_verify_session) ANTES de
@@ -16,9 +17,12 @@
  *  - Solo expone las 4 herramientas de Nivel 1 (Solo Lectura).
  */
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const MAX_TOOL_ROUNDS = 5;
+
+function obtenerModeloGemini() {
+  return String(process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+}
 
 const SYSTEM_INSTRUCTION = `Sos el asistente técnico de inteligencia y control de GR Servicios Contables (Estudio del Contador Público Germán Read, Salta, Argentina), operando en el módulo privado /admin bajo estricto Nivel 1 (Solo Lectura).
 
@@ -136,8 +140,9 @@ async function llamarAppsScriptAdmin(appsScriptUrl, action, payload) {
   return json;
 }
 
-async function llamarGemini(geminiApiKey, contents) {
-  const resp = await fetch(GEMINI_ENDPOINT, {
+async function llamarGemini(geminiApiKey, geminiModel, contents) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
+  const resp = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -242,7 +247,8 @@ export default async function handler(req, res) {
     });
   }
 
-  // 4. Bucle de conversación con Gemini 2.5 Flash + Function Calling (Nivel 1)
+  // 4. Bucle de conversación con Gemini 3.8 Flash (o GEMINI_MODEL) + Function Calling (Nivel 1)
+  const geminiModel = obtenerModeloGemini();
   const contents = [
     ...normalizarHistorialParaGemini(history),
     { role: 'user', parts: [{ text: message }] }
@@ -254,7 +260,7 @@ export default async function handler(req, res) {
     let respuestaFinal = '';
 
     for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
-      const geminiData = await llamarGemini(geminiApiKey, contents);
+      const geminiData = await llamarGemini(geminiApiKey, geminiModel, contents);
       const candidate = geminiData?.candidates?.[0];
       const modelContent = candidate?.content;
       const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
@@ -349,7 +355,7 @@ export default async function handler(req, res) {
       ok: true,
       reply: respuestaFinal,
       toolsUsed,
-      model: GEMINI_MODEL,
+      model: geminiModel,
       timestamp: new Date().toISOString()
     });
   } catch (err) {

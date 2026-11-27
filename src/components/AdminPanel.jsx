@@ -215,7 +215,7 @@ export default function AdminPanel() {
           role: 'model',
           text: res.reply || 'Sin respuesta del asistente.',
           toolsUsed: Array.isArray(res.toolsUsed) ? res.toolsUsed : [],
-          model: res.model || 'gemini-2.5-flash',
+          model: res.model || 'gemini-3.8-flash',
           hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
         };
         setMensajesChat((prev) => [...prev, nuevoMsgIA]);
@@ -570,7 +570,7 @@ export default function AdminPanel() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                Etapa 3 — Motor Gemini 2.5 Flash (Function Calling) + Supervisión Técnica
+                Etapa 3 — Motor Gemini 3.8 Flash (Function Calling) + Supervisión Técnica
               </span>
               <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
                 Chat Central de consulta sobre planillas reales y diagnóstico del estudio
@@ -614,7 +614,7 @@ export default function AdminPanel() {
                   Chat Central — GR Cerebro de IA
                 </h3>
                 <p className="text-[11px] text-petroleo-100">
-                  Gemini 2.5 Flash • 4 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos y Alertas)
+                  Gemini 3.8 Flash • 4 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos y Alertas)
                 </p>
               </div>
             </div>
