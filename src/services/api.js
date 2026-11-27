@@ -911,6 +911,25 @@ export async function adminLogout({ sessionToken }) {
   }
 }
 
+export async function adminHealthcheck({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_healthcheck', { sessionToken: token });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo ejecutar el diagnóstico del estudio.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) {
+      err.sessionExpired = true;
+    }
+    throw err;
+  }
+  return data;
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */

@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
+  AlertCircle,
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Cpu,
   Database,
@@ -14,10 +17,16 @@ import {
   KeyRound,
   Lock,
   LogOut,
+  RefreshCw,
   ShieldCheck,
   Smartphone
 } from 'lucide-react';
-import { adminLogin, adminLogout, adminVerifySession } from '../services/api.js';
+import {
+  adminHealthcheck,
+  adminLogin,
+  adminLogout,
+  adminVerifySession
+} from '../services/api.js';
 import {
   eliminarStorageSeguro,
   guardarJsonSeguro,
@@ -27,46 +36,60 @@ import LoadingOverlay from './LoadingOverlay.jsx';
 
 const ADMIN_SESSION_KEY = 'gr_cerebro_admin_session_v1';
 
-const MODULOS_ESTADO = [
-  {
-    id: 'portal',
-    titulo: 'Portal de Autogestión (PWA)',
-    subtitulo: 'App de clientes, notificaciones Push y descargas PDF',
-    estado: 'Etapa 2 pendiente',
-    Icon: Smartphone
-  },
-  {
-    id: 'bot1',
-    titulo: 'Bot 1 — Registro de Comprobantes',
-    subtitulo: 'Captura Telegram / WhatsApp, OCR y clasificación contable',
-    estado: 'Etapa 2 pendiente',
-    Icon: Bot
-  },
-  {
-    id: 'bot2',
-    titulo: 'Bot 2 — Ganancias Autónomo',
-    subtitulo: 'Seguimiento impositivo y deducciones de cuarta/tercera categoría',
-    estado: 'Etapa 2 pendiente',
-    Icon: Cpu
-  },
-  {
-    id: 'arca',
-    titulo: 'Puente ARCA',
-    subtitulo: 'Facturación electrónica WSAA / WSFEv1 y Constancias',
-    estado: 'Etapa 2 pendiente',
-    Icon: Globe
-  }
+const ICONOS_COMPONENTE = {
+  portal: Smartphone,
+  bot1: Bot,
+  bot2: Cpu,
+  arca: Globe
+};
+
+const PLANILLAS_FALLBACK = [
+  { id: 'registro_comprobantes', nombre: 'DEV_Registro de Comprobantes', propiedad: '' },
+  { id: 'ganancias_autonomo', nombre: 'DEV Ganancias Autónomo', propiedad: 'SHEET_ID_GANANCIAS' },
+  { id: 'excel_maestro', nombre: 'Excel Maestro', propiedad: 'SHEET_ID_MAESTRO' },
+  { id: 'control_vencimientos', nombre: 'Control de Vencimientos', propiedad: 'SHEET_ID_VENCIMIENTOS' },
+  { id: 'control_alertas_arca', nombre: 'Control de Alertas ARCA', propiedad: 'SHEET_ID_ALERTAS_ARCA' },
+  { id: 'convenio_multilateral', nombre: 'Convenio Multilateral', propiedad: 'SHEET_ID_CONVENIO' },
+  { id: 'errepar_4ta', nombre: 'Errepar, retenciones 4ta categoría', propiedad: 'SHEET_ID_ERREPAR_4TA' }
 ];
 
-const PLANILLAS_ERP = [
-  { id: 1, nombre: 'Comprobantes', detalle: 'Compras, gastos y tickets registrados' },
-  { id: 2, nombre: 'Pedidos de Facturación', detalle: 'Solicitudes y emisiones con CAE' },
-  { id: 3, nombre: 'Directorio Clientes', detalle: 'Padrón maestro, CUIT y modalidad ARCA' },
-  { id: 4, nombre: 'Semáforo Monotributo', detalle: 'Topes 12M y alertas Art. 20' },
-  { id: 5, nombre: 'Conciliación Bancaria y ML', detalle: 'Extractos bancarios y Mercado Pago' },
-  { id: 6, nombre: 'Control Honorarios', detalle: 'Liquidación y pagos mensuales' },
-  { id: 7, nombre: 'Control Pagos VEP', detalle: 'Seguimiento de VEPs y vencimientos' }
-];
+function obtenerEstiloEstado(statusRaw) {
+  const st = String(statusRaw || '').toUpperCase();
+  if (st === 'OK') {
+    return {
+      label: 'Operativo',
+      badgeCls: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+      dotCls: 'bg-emerald-500',
+      borderCls: 'border-emerald-200/90',
+      Icon: CheckCircle2
+    };
+  }
+  if (st === 'SIN_ID') {
+    return {
+      label: 'Pendiente de ID',
+      badgeCls: 'bg-amber-100 text-amber-900 border-amber-200',
+      dotCls: 'bg-amber-500',
+      borderCls: 'border-amber-200/90',
+      Icon: Clock
+    };
+  }
+  if (st === 'ERROR') {
+    return {
+      label: 'Error',
+      badgeCls: 'bg-red-100 text-red-900 border-red-200',
+      dotCls: 'bg-red-600',
+      borderCls: 'border-red-300',
+      Icon: AlertCircle
+    };
+  }
+  return {
+    label: 'Consultando...',
+    badgeCls: 'bg-slate-100 text-slate-600 border-slate-200',
+    dotCls: 'bg-slate-400',
+    borderCls: 'border-slate-200/80',
+    Icon: Clock
+  };
+}
 
 export default function AdminPanel() {
   const [sesionAdmin, setSesionAdmin] = useState(null);
@@ -80,6 +103,41 @@ export default function AdminPanel() {
   const [autenticando, setAutenticando] = useState(false);
   const [cerrandoSesion, setCerrandoSesion] = useState(false);
   const [error, setError] = useState('');
+
+  // Estado del diagnóstico en tiempo real (Etapa 2 — Nivel 1 solo lectura)
+  const [healthData, setHealthData] = useState(null);
+  const [cargandoDiagnostico, setCargandoDiagnostico] = useState(false);
+  const [errorDiagnostico, setErrorDiagnostico] = useState('');
+  const [planillasExpandidas, setPlanillasExpandidas] = useState({});
+
+  const forzarVueltaAlLogin = useCallback((mensaje) => {
+    eliminarStorageSeguro(ADMIN_SESSION_KEY);
+    setSesionAdmin(null);
+    setHealthData(null);
+    setErrorDiagnostico('');
+    setError(mensaje || 'Tu sesión de administrador expiró. Ingresá nuevamente tu Clave Maestra.');
+  }, []);
+
+  const ejecutarDiagnostico = useCallback(
+    async (token) => {
+      if (!token) return;
+      setCargandoDiagnostico(true);
+      setErrorDiagnostico('');
+      try {
+        const res = await adminHealthcheck({ sessionToken: token });
+        setHealthData(res);
+      } catch (err) {
+        if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+          forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+          return;
+        }
+        setErrorDiagnostico(err?.message || 'No se pudo actualizar el diagnóstico técnico.');
+      } finally {
+        setCargandoDiagnostico(false);
+      }
+    },
+    [forzarVueltaAlLogin]
+  );
 
   // Verificar sesión temporal del administrador (CacheService 2 h) al abrir /admin
   useEffect(() => {
@@ -120,6 +178,13 @@ export default function AdminPanel() {
       cancelado = true;
     };
   }, []);
+
+  // Apenas queda autenticado el administrador, disparar admin_healthcheck automáticamente
+  useEffect(() => {
+    if (sesionAdmin?.sessionToken) {
+      ejecutarDiagnostico(sesionAdmin.sessionToken);
+    }
+  }, [sesionAdmin?.sessionToken, ejecutarDiagnostico]);
 
   const handleLoginAdmin = async (e) => {
     e.preventDefault();
@@ -173,10 +238,19 @@ export default function AdminPanel() {
     } finally {
       eliminarStorageSeguro(ADMIN_SESSION_KEY);
       setSesionAdmin(null);
+      setHealthData(null);
       setMasterKey('');
       setError('');
+      setErrorDiagnostico('');
       setCerrandoSesion(false);
     }
+  };
+
+  const toggleExpandirPlanilla = (id) => {
+    setPlanillasExpandidas((prev) => ({
+      ...prev,
+      [id]: !prev[id]
+    }));
   };
 
   if (verificandoSesion) {
@@ -275,16 +349,50 @@ export default function AdminPanel() {
         </div>
 
         <footer className="text-center text-[11px] text-[#FBF8CC]/80 pt-4">
-          GR Servicios Contables • Cerebro Central de IA (Etapa 1 — Base de Seguridad)
+          GR Servicios Contables • Cerebro Central de IA (Etapa 2 — Supervisión Solo Lectura)
         </footer>
       </div>
     );
   }
 
-  // PANEL CENTRAL DE ADMINISTRADOR (ESQUELETO VISUAL ETAPA 1)
+  const componentesLista = healthData?.componentes
+    ? [
+        healthData.componentes.portalPwa,
+        healthData.componentes.bot1,
+        healthData.componentes.bot2,
+        healthData.componentes.puenteArca
+      ].filter(Boolean)
+    : [
+        { id: 'portal', nombre: 'Portal de Autogestión (PWA)', status: '', detalle: 'Consultando estado...' },
+        { id: 'bot1', nombre: 'Bot 1 — Registro de Comprobantes', status: '', detalle: 'Consultando estado...' },
+        { id: 'bot2', nombre: 'Bot 2 — Ganancias Autónomo', status: '', detalle: 'Consultando estado...' },
+        { id: 'arca', nombre: 'Puente ARCA', status: '', detalle: 'Consultando estado...' }
+      ];
+
+  const planillasLista =
+    Array.isArray(healthData?.planillas) && healthData.planillas.length > 0
+      ? healthData.planillas
+      : PLANILLAS_FALLBACK.map((p) => ({
+          ...p,
+          configured: false,
+          status: '',
+          sheetCount: 0,
+          sheetNames: [],
+          error: ''
+        }));
+
+  const logsLista = Array.isArray(healthData?.logs) ? healthData.logs : [];
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
-      <LoadingOverlay visible={cerrandoSesion} message="Cerrando sesión Admin..." />
+      <LoadingOverlay
+        visible={cerrandoSesion || (cargandoDiagnostico && !healthData)}
+        message={
+          cerrandoSesion
+            ? 'Cerrando sesión Admin...'
+            : 'Ejecutando diagnóstico solo lectura...'
+        }
+      />
 
       {/* Encabezado Administrador */}
       <header className="sticky top-0 z-30 bg-[#0F4C5C] text-white border-b-4 border-[#E36414] shadow-md">
@@ -310,25 +418,37 @@ export default function AdminPanel() {
                 <ShieldCheck className="w-3.5 h-3.5 text-[#FBF8CC] shrink-0" />
                 <span>{sesionAdmin.adminName}</span>
                 <span className="opacity-60">•</span>
-                <span className="opacity-90">Sesión temporal verificada (2 h)</span>
+                <span className="opacity-90">Nivel 1 (Solo Lectura)</span>
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleCerrarSesionAdmin}
-            disabled={cerrandoSesion}
-            className="inline-flex items-center gap-1.5 text-xs font-extrabold bg-white/15 hover:bg-white/25 disabled:opacity-50 text-white px-3.5 py-2.5 rounded-xl border border-white/20 transition"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Cerrar sesión Admin</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => ejecutarDiagnostico(sesionAdmin.sessionToken)}
+              disabled={cargandoDiagnostico || cerrandoSesion}
+              className="inline-flex items-center gap-1.5 text-xs font-extrabold bg-[#E36414] hover:bg-ladrillo-dark disabled:opacity-60 text-white px-3.5 py-2.5 rounded-xl shadow-sm transition active:scale-95"
+            >
+              <RefreshCw className={`w-4 h-4 ${cargandoDiagnostico ? 'animate-spin' : ''}`} />
+              <span>{cargandoDiagnostico ? 'Actualizando...' : 'Actualizar Diagnóstico'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCerrarSesionAdmin}
+              disabled={cerrandoSesion}
+              className="inline-flex items-center gap-1.5 text-xs font-extrabold bg-white/15 hover:bg-white/25 disabled:opacity-50 text-white px-3.5 py-2.5 rounded-xl border border-white/20 transition"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Cerrar sesión Admin</span>
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* Banner de Etapa 1 */}
+        {/* Banner de Estado Etapa 2 */}
         <section className="bg-[#FBF8CC] border border-amber-300/80 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-2xl bg-[#0F4C5C] text-[#FBF8CC] flex items-center justify-center shrink-0">
@@ -336,61 +456,116 @@ export default function AdminPanel() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                GR Cerebro Central de IA — Etapa 1 Activa
+                Etapa 2 — Conector Solo Lectura y Supervisión Técnica (Módulo 5)
               </span>
               <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
-                Base de Seguridad, Bitácora de Auditoría y Módulo Admin operativos
+                Diagnóstico en tiempo real de las 7 planillas y servicios del estudio
               </h2>
               <p className="text-xs text-slate-700 mt-0.5">
-                Los módulos operativos y la conexión con Gemini API se habilitarán en la Etapa 2 sin afectar el portal de clientes.
+                {healthData?.checkedAtAR
+                  ? `Última verificación: ${healthData.checkedAtAR} • Estricto Nivel 1 (sin escrituras ni Gemini API).`
+                  : 'Consultando estado de conectores en estricto modo solo lectura...'}
               </p>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-emerald-100 text-emerald-900 border border-emerald-200 px-3 py-1.5 rounded-full shrink-0 self-start sm:self-center">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>Nivel 1 Auditado</span>
-          </span>
+
+          {healthData?.resumen && (
+            <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+              <span className="text-[11px] font-extrabold bg-emerald-100 text-emerald-900 border border-emerald-200 px-2.5 py-1 rounded-full">
+                {healthData.resumen.planillasOk}/{healthData.resumen.totalPlanillas} OK
+              </span>
+              {healthData.resumen.planillasSinId > 0 && (
+                <span className="text-[11px] font-extrabold bg-amber-100 text-amber-900 border border-amber-200 px-2.5 py-1 rounded-full">
+                  {healthData.resumen.planillasSinId} Sin ID
+                </span>
+              )}
+              {healthData.resumen.planillasError > 0 && (
+                <span className="text-[11px] font-extrabold bg-red-100 text-red-900 border border-red-200 px-2.5 py-1 rounded-full">
+                  {healthData.resumen.planillasError} Error
+                </span>
+              )}
+            </div>
+          )}
         </section>
 
-        {/* Tarjetas de estado en preparación: Portal, Bot 1, Bot 2, Puente ARCA */}
+        {errorDiagnostico && (
+          <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-800 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{errorDiagnostico}</span>
+          </div>
+        )}
+
+        {/* 1. Estado técnico de componentes en tiempo real */}
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2 px-1">
             <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-              Ecosistema y Conectores del Estudio
+              Supervisión Técnica de Componentes
             </h3>
-            <span className="text-[11px] font-bold text-slate-500">4 módulos principales</span>
+            <span className="text-[11px] font-bold text-slate-500">
+              Verde = Operativo • Amarillo = Pendiente de ID • Rojo = Error
+            </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {MODULOS_ESTADO.map(({ id, titulo, subtitulo, estado, Icon }) => (
-              <article
-                key={id}
-                className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 flex flex-col justify-between gap-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-2xl bg-petroleo-50 text-[#0F4C5C] flex items-center justify-center shrink-0">
-                      <Icon className="w-5 h-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="text-sm font-black text-[#0F4C5C] leading-snug">{titulo}</h4>
-                      <p className="text-xs text-slate-500 mt-0.5 leading-snug">{subtitulo}</p>
+            {componentesLista.map((comp) => {
+              const est = obtenerEstiloEstado(comp.status);
+              const StatusIcon = est.Icon;
+              const CompIcon = ICONOS_COMPONENTE[comp.id] || Activity;
+
+              return (
+                <article
+                  key={comp.id}
+                  className={`bg-white rounded-3xl shadow-sm border p-4 sm:p-5 flex flex-col justify-between gap-3 ${est.borderCls}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-2xl bg-petroleo-50 text-[#0F4C5C] flex items-center justify-center shrink-0">
+                        <CompIcon className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-sm font-black text-[#0F4C5C] leading-snug">
+                          {comp.nombre}
+                        </h4>
+                        <p className="text-xs text-slate-600 mt-1 leading-snug">
+                          {comp.detalle}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-amber-50 text-amber-900 border border-amber-200 px-2.5 py-1 rounded-full">
-                    <Clock className="w-3 h-3" />
-                    <span>{estado}</span>
-                  </span>
-                  <span className="text-[11px] font-semibold text-slate-400">Solo lectura / Esqueleto</span>
-                </div>
-              </article>
-            ))}
+
+                  {comp.error && (
+                    <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-[11px] font-bold text-red-800 break-words">
+                      {comp.error}
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                    <span
+                      className={`inline-flex items-center gap-1.5 text-[11px] font-extrabold px-2.5 py-1 rounded-full border ${est.badgeCls}`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${est.dotCls}`} />
+                      <StatusIcon className="w-3.5 h-3.5" />
+                      <span>{est.label}</span>
+                    </span>
+
+                    {comp.id === 'arca' && comp.httpCode && (
+                      <span className="text-[11px] font-mono font-bold text-slate-500">
+                        HTTP {comp.httpCode}
+                      </span>
+                    )}
+                    {comp.id === 'bot1' && comp.ultimoMovimiento?.hojaOrigen && (
+                      <span className="text-[11px] font-semibold text-slate-500">
+                        {comp.ultimoMovimiento.hojaOrigen} ({comp.ultimoMovimiento.totalFilas} filas)
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
 
-        {/* Las 7 Planillas del ERP */}
+        {/* 2. Las 7 Planillas reales del ERP (con expansión de pestañas) */}
         <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2.5">
@@ -402,86 +577,198 @@ export default function AdminPanel() {
                   Las 7 Planillas del ERP
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Integración de lectura/herramientas centralizadas preparada para la siguiente fase
+                  Tocá cada libro para ver el detalle de pestañas o el error de conexión
                 </p>
               </div>
             </div>
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-amber-50 text-amber-900 border border-amber-200 px-3 py-1 rounded-full">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Etapa 2 pendiente</span>
+            <span className="text-[11px] font-extrabold bg-petroleo-50 text-[#0F4C5C] border border-petroleo/15 px-3 py-1 rounded-full">
+              Solo lectura (Nivel 1)
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {PLANILLAS_ERP.map((hoja) => (
-              <div
-                key={hoja.id}
-                className="rounded-2xl bg-[#F8FAFC] border border-slate-200/80 p-3 flex items-start gap-2.5"
-              >
-                <div className="w-8 h-8 rounded-xl bg-white border border-slate-200 text-[#0F4C5C] flex items-center justify-center shrink-0">
-                  <FileSpreadsheet className="w-4 h-4" />
+          <div className="space-y-2.5">
+            {planillasLista.map((libro, idx) => {
+              const est = obtenerEstiloEstado(libro.status);
+              const StatusIcon = est.Icon;
+              const expandida = Boolean(planillasExpandidas[libro.id]);
+              const tienePestanas = Array.isArray(libro.sheetNames) && libro.sheetNames.length > 0;
+
+              return (
+                <div
+                  key={libro.id}
+                  className={`rounded-2xl bg-[#F8FAFC] border overflow-hidden transition ${est.borderCls}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleExpandirPlanilla(libro.id)}
+                    className="w-full p-3.5 text-left flex items-center justify-between gap-3 hover:bg-slate-100/70 transition"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-white border border-slate-200 text-[#0F4C5C] flex items-center justify-center shrink-0">
+                        <FileSpreadsheet className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs sm:text-sm font-black text-slate-900 leading-tight truncate">
+                          {idx + 1}. {libro.nombre}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                          {libro.status === 'OK'
+                            ? `${libro.sheetCount} ${libro.sheetCount === 1 ? 'pestaña' : 'pestañas'}${
+                                libro.bookTitle && libro.bookTitle !== libro.nombre
+                                  ? ` • Archivo: ${libro.bookTitle}`
+                                  : ''
+                              }`
+                            : libro.propiedad
+                              ? `Propiedad: ${libro.propiedad}`
+                              : 'Planilla activa del script'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-extrabold px-2.5 py-1 rounded-full border ${est.badgeCls}`}
+                      >
+                        <StatusIcon className="w-3 h-3" />
+                        <span>{est.label}</span>
+                      </span>
+                      {expandida ? (
+                        <ChevronUp className="w-4 h-4 text-slate-400" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-slate-400" />
+                      )}
+                    </div>
+                  </button>
+
+                  {expandida && (
+                    <div className="px-4 pb-4 pt-2 border-t border-slate-200/70 bg-white space-y-2.5">
+                      {libro.status === 'OK' && tienePestanas && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                            Pestañas detectadas ({libro.sheetCount})
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {libro.sheetNames.map((nombrePestana) => (
+                              <span
+                                key={nombrePestana}
+                                className="text-[11px] font-bold bg-petroleo-50 text-[#0F4C5C] border border-petroleo/15 px-2.5 py-1 rounded-lg"
+                              >
+                                {nombrePestana}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {libro.status === 'SIN_ID' && (
+                        <p className="text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                          {libro.error ||
+                            `Falta configurar la propiedad ${libro.propiedad} en Propiedades del Script de Google Apps Script.`}
+                        </p>
+                      )}
+
+                      {libro.status === 'ERROR' && (
+                        <p className="text-xs font-semibold text-red-800 bg-red-50 border border-red-200 rounded-xl p-3 break-words">
+                          <strong>Detalle del error:</strong> {libro.error || 'No se pudo abrir la planilla.'}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-black text-slate-800 leading-tight truncate">
-                    {hoja.id}. {hoja.nombre}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{hoja.detalle}</p>
-                  <span className="inline-block mt-1.5 text-[10px] font-extrabold text-[#E36414]">
-                    Etapa 2 pendiente
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
-        {/* Sección Registro de actividad (Auditoría en Log_Cerebro_IA) */}
-        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3">
-          <div className="flex items-center justify-between gap-2">
+        {/* 3. Tabla de últimos 10 eventos de Log_Cerebro_IA */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-3.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
                 <Activity className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-black text-[#0F4C5C] leading-tight">
-                  Registro de actividad
+                <h3 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-tight">
+                  Registro de actividad — Log_Cerebro_IA
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Bitácora inmutable de seguridad del Cerebro Central
+                  Últimos 10 eventos auditados (del más reciente al más antiguo)
                 </p>
               </div>
             </div>
             <span className="text-[11px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-full">
-              Activo
+              {logsLista.length} registros
             </span>
           </div>
 
-          <div className="rounded-2xl bg-emerald-50/70 border border-emerald-200 p-4 space-y-2 text-xs text-emerald-950">
-            <div className="flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <p className="font-bold leading-snug">
-                Tu acceso de administrador quedó auditado automáticamente en la hoja{' '}
-                <strong className="font-mono text-[#0F4C5C]">
-                  {sesionAdmin.auditSheet || 'Log_Cerebro_IA'}
-                </strong>
-                .
-              </p>
+          {logsLista.length === 0 ? (
+            <div className="p-5 rounded-2xl bg-[#F8FAFC] border border-slate-200/80 text-center text-xs text-slate-500">
+              {cargandoDiagnostico
+                ? 'Cargando últimos eventos de Log_Cerebro_IA...'
+                : 'No hay eventos registrados todavía en Log_Cerebro_IA.'}
             </div>
-            <div className="pl-6 text-[11px] text-emerald-900/90 space-y-1">
-              <p>
-                <strong>Usuario:</strong> {sesionAdmin.adminName} (Admin) • <strong>Nivel:</strong> Nivel 1 •{' '}
-                <strong>Herramienta:</strong> <span className="font-mono">admin_login</span>
-              </p>
-              {sesionAdmin.createdAtAR && (
-                <p>
-                  <strong>Ingreso registrado:</strong> {sesionAdmin.createdAtAR}
-                </p>
-              )}
-              <p>
-                <strong>Política de seguridad:</strong> nunca se registran contraseñas, claves maestras ni tokens de sesión en la columna Datos.
-              </p>
+          ) : (
+            <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+              <table className="w-full text-left border-collapse min-w-[680px]">
+                <thead>
+                  <tr className="bg-[#0F4C5C] text-white text-[10px] uppercase tracking-wider">
+                    <th className="py-2.5 px-3 font-extrabold">Fecha/Hora</th>
+                    <th className="py-2.5 px-3 font-extrabold">Usuario</th>
+                    <th className="py-2.5 px-3 font-extrabold">Nivel</th>
+                    <th className="py-2.5 px-3 font-extrabold">Herramienta</th>
+                    <th className="py-2.5 px-3 font-extrabold">Datos</th>
+                    <th className="py-2.5 px-3 font-extrabold">Resultado</th>
+                    <th className="py-2.5 px-3 font-extrabold">Autorización</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[11px]">
+                  {logsLista.map((log, idx) => {
+                    const resUpper = String(log.resultado || '').toUpperCase();
+                    const autUpper = String(log.autorizacion || '').toUpperCase();
+                    const resCls =
+                      resUpper === 'OK'
+                        ? 'bg-emerald-100 text-emerald-900'
+                        : resUpper.includes('ALERTA')
+                          ? 'bg-amber-100 text-amber-900'
+                          : 'bg-red-100 text-red-900';
+                    const autCls = autUpper.includes('AUTORIZ')
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                      : 'bg-red-50 text-red-800 border border-red-200';
+
+                    return (
+                      <tr key={`${log.fechaHora}-${idx}`} className="hover:bg-slate-50/80 align-top">
+                        <td className="py-2.5 px-3 font-mono text-slate-600 whitespace-nowrap">
+                          {log.fechaHora}
+                        </td>
+                        <td className="py-2.5 px-3 font-bold text-slate-800 whitespace-nowrap">
+                          {log.usuario}
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-[#0F4C5C] whitespace-nowrap">
+                          {log.nivel}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-700 whitespace-nowrap">
+                          {log.herramienta}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-600 max-w-xs break-words">
+                          {log.datos}
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span className={`inline-block font-extrabold text-[10px] px-2 py-0.5 rounded-full ${resCls}`}>
+                            {log.resultado}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <span className={`inline-block font-extrabold text-[10px] px-2 py-0.5 rounded-full ${autCls}`}>
+                            {log.autorizacion}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </div>
+          )}
         </section>
       </main>
     </div>
