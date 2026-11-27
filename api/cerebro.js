@@ -2,31 +2,57 @@
  * ============================================================================
  * VERCEL SERVERLESS FUNCTION — GR CEREBRO CENTRAL DE IA (/api/cerebro)
  * ============================================================================
- * Etapa 3: Motor Gemini API (gemini-3.8-flash) con Function Calling estricto
- * de Nivel 1 (Solo Lectura) para el módulo /admin.
+ * Motor híbrido Nivel 1 (Solo Lectura) para el módulo /admin:
+ *  1) Prioritario: Groq (`llama-3.3-70b-versatile`) con timeout 6000 ms si existe GROQ_API_KEY
+ *  2) Secundario : Gemini (`gemini-3.8-flash`) con timeout corto 3500 ms si existe GEMINI_API_KEY
+ *  3) Respaldo   : Modo directo determinístico Nivel 1 (sin IA, consulta directa a Apps Script)
  *
- * Variables de entorno requeridas en Vercel (Settings -> Environment Variables):
- *  - GEMINI_API_KEY   : API Key de Google AI Studio / Gemini API
+ * Variables de entorno en Vercel (Settings -> Environment Variables):
+ *  - GROQ_API_KEY     : (Recomendado / Prioritario) API Key de Groq Cloud
+ *  - GROQ_MODEL       : (Opcional) Modelo Groq (por defecto: llama-3.3-70b-versatile)
+ *  - GEMINI_API_KEY   : (Opcional / Secundario) API Key de Google AI Studio / Gemini API
+ *  - GEMINI_MODEL     : (Opcional) Modelo Gemini (por defecto: gemini-3.8-flash)
  *  - APPS_SCRIPT_URL  : URL /exec de la Web App de Google Apps Script del estudio
- *  - GEMINI_MODEL     : (Opcional) Modelo Gemini a utilizar (por defecto: gemini-3.8-flash)
  *
  * Seguridad:
  *  - Verifica sessionToken contra Apps Script (admin_verify_session) ANTES de
- *    invocar a Gemini.
- *  - Nunca hardcodea claves ni expone GEMINI_API_KEY al navegador.
- *  - Solo expone las 4 herramientas de Nivel 1 (Solo Lectura).
+ *    invocar cualquier motor de IA.
+ *  - Nunca hardcodea claves ni expone API keys al navegador.
+ *  - Solo expone las 5 herramientas de Nivel 1 (Solo Lectura).
  */
 
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
+const GROQ_TIMEOUT_MS = 6000;
+
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-const RETRY_DELAY_MS = 800;
+const GEMINI_TIMEOUT_MS = 3500;
 const MAX_TOOL_ROUNDS = 5;
+
+function obtenerModeloGroq() {
+  return String(process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL).trim() || DEFAULT_GROQ_MODEL;
+}
 
 function obtenerModeloGemini() {
   return String(process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
 }
 
-function esperar(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchConTimeout(url, options = {}, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error(`Tiempo de espera agotado (${timeoutMs} ms)`);
+      timeoutErr.isTimeout = true;
+      timeoutErr.httpStatus = 504;
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function esErrorSobrecarga(status, mensaje = '') {
@@ -175,6 +201,115 @@ const MAPA_ACCIONES_APPS_SCRIPT = {
   consultar_normativa: 'admin_consultar_normativa'
 };
 
+// Mismas 5 herramientas Nivel 1 en formato OpenAI-compatible para Groq
+const GROQ_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_cliente',
+      description:
+        'Busca un contribuyente/cliente en "Directorio Clientes" (y en "Excel Maestro" si está configurado) por CUIT sin guiones o por parte del nombre/razón social. Devuelve categoría, cuota Monotributo, estado mes actual VEP, estado de honorarios, modalidad ARCA y semáforo.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'CUIT (con o sin guiones) o parte del nombre / razón social del cliente a buscar.'
+          }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_veps',
+      description:
+        'Consulta VEPs en "Solicitudes App PWA", "Control Pagos VEP" y estado mensual de VEP en "Directorio Clientes", filtrando opcionalmente por estado y/o cliente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          estado: {
+            type: 'string',
+            description:
+              'Filtro de estado: "Solicitado", "Pendiente", "Enviado", "Pagado", "Verificar" o "Todos". Usá "Pendiente" para detectar VEPs pendientes de envío o revisión.'
+          },
+          cliente: {
+            type: 'string',
+            description: 'Opcional: nombre o CUIT de un cliente específico para acotar el resultado.'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_honorarios',
+      description:
+        'Consulta el estado de honorarios mensuales en "Directorio Clientes" y los últimos pagos registrados en "Control Honorarios", permitiendo filtrar por Pendiente, Vencido, Pagado o Todos.',
+      parameters: {
+        type: 'object',
+        properties: {
+          estado: {
+            type: 'string',
+            description: 'Filtro de estado de honorarios: "Pendiente", "Vencido", "Pagado" o "Todos".'
+          },
+          cliente: {
+            type: 'string',
+            description: 'Opcional: nombre o CUIT de un cliente específico.'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_vencimientos_y_alertas',
+      description:
+        'Lee las hojas principales de "Control de Vencimientos" (SHEET_ID_VENCIMIENTOS) y "Control de Alertas ARCA" (SHEET_ID_ALERTAS_ARCA) devolviendo próximos vencimientos y últimas alertas registradas.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tipo: {
+            type: 'string',
+            description: 'Qué consultar: "todos" (vencimientos + alertas), "vencimientos" o "alertas".'
+          },
+          limite: {
+            type: 'integer',
+            description: 'Cantidad máxima de registros a traer por libro (por defecto 20, máximo 40).'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_normativa',
+      description:
+        'Consulta la hoja "Base_Conocimiento_IA" con criterios técnicos, reglas operativas y normativa con vigencia del estudio. Por defecto devuelve solo reglas con Estado = VIGENTE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tema: {
+            type: 'string',
+            description:
+              'Opcional: palabra clave o tema a filtrar (ej: "Monotributo", "Art. 20", "VEP", "Convenio", "DGR").'
+          },
+          incluirHistoricas: {
+            type: 'boolean',
+            description: 'Opcional: true para incluir también reglas históricas o derogadas.'
+          }
+        }
+      }
+    }
+  }
+];
+
 async function llamarAppsScriptAdmin(appsScriptUrl, action, payload) {
   const resp = await fetch(appsScriptUrl, {
     method: 'POST',
@@ -193,26 +328,80 @@ async function llamarAppsScriptAdmin(appsScriptUrl, action, payload) {
   return json;
 }
 
-async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
-  const resp = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': geminiApiKey
-    },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: SYSTEM_INSTRUCTION }]
-      },
-      contents,
-      tools: GEMINI_TOOLS,
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 2048
-      }
-    })
+async function ejecutarHerramientaNivel1(appsScriptUrl, sessionToken, toolName, toolArgs, toolsUsed) {
+  const appsScriptAction = MAPA_ACCIONES_APPS_SCRIPT[toolName];
+  if (!appsScriptAction) {
+    const errObj = {
+      ok: false,
+      error: `Herramienta no autorizada en Nivel 1: ${toolName}`
+    };
+    toolsUsed.push({
+      name: toolName,
+      args: toolArgs,
+      ok: false,
+      fuentes: [],
+      avisos: [errObj.error]
+    });
+    return errObj;
+  }
+
+  const resultadoTool = await llamarAppsScriptAdmin(appsScriptUrl, appsScriptAction, {
+    ...toolArgs,
+    sessionToken
   });
+
+  if (
+    resultadoTool &&
+    resultadoTool.ok === false &&
+    /sesi[oó]n\s+expirada/i.test(resultadoTool.error || '')
+  ) {
+    const errExp = new Error('Sesión expirada');
+    errExp.sessionExpired = true;
+    throw errExp;
+  }
+
+  toolsUsed.push({
+    name: toolName,
+    args: toolArgs,
+    ok: Boolean(resultadoTool?.ok),
+    fuentes: Array.isArray(resultadoTool?.fuentesConsultadas) ? resultadoTool.fuentesConsultadas : [],
+    avisos: Array.isArray(resultadoTool?.avisos) ? resultadoTool.avisos : []
+  });
+
+  return resultadoTool || { ok: false, error: 'Sin respuesta del servidor.' };
+}
+
+function normalizarHistorialParaGroq(historyRaw) {
+  if (!Array.isArray(historyRaw)) return [];
+  return historyRaw
+    .slice(-10)
+    .filter((m) => m && typeof m.text === 'string' && m.text.trim().length > 0)
+    .map((m) => ({
+      role: m.role === 'model' || m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.text.trim().slice(0, 3000)
+    }));
+}
+
+async function llamarGroqUnaVez(groqApiKey, groqModel, messages) {
+  const resp = await fetchConTimeout(
+    GROQ_ENDPOINT,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${groqApiKey}`
+      },
+      body: JSON.stringify({
+        model: groqModel,
+        messages,
+        tools: GROQ_TOOLS,
+        tool_choice: 'auto',
+        temperature: 0.1,
+        max_tokens: 2048
+      })
+    },
+    GROQ_TIMEOUT_MS
+  );
 
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -224,64 +413,250 @@ async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
   return data;
 }
 
-/**
- * Llama únicamente al modelo principal (gemini-3.8-flash).
- * Si recibe error 503 ("high demand") o 429, espera 800 ms y reintenta 1 vez.
- * Si vuelve a fallar por sobrecarga, lanza error marcado con `isOverload = true`
- * para activar el respaldo determinístico local de Nivel 1 sin bloquear /admin.
- */
-async function llamarGeminiPrincipalConReintento(geminiApiKey, modeloPrincipal, contents) {
-  let ultimoError = null;
+async function ejecutarCicloGroq({ groqApiKey, groqModel, appsScriptUrl, sessionToken, message, history }) {
+  const messages = [
+    { role: 'system', content: SYSTEM_INSTRUCTION },
+    ...normalizarHistorialParaGroq(history),
+    { role: 'user', content: message }
+  ];
+  const toolsUsed = [];
+  let respuestaFinal = '';
 
-  for (let intento = 1; intento <= 2; intento++) {
-    try {
-      const data = await llamarGeminiUnaVez(geminiApiKey, modeloPrincipal, contents);
-      return { data, modelUsed: modeloPrincipal };
-    } catch (err) {
-      ultimoError = err;
-      const sobrecarga = esErrorSobrecarga(err.httpStatus, err.message);
-      if (sobrecarga) {
-        if (intento === 1) {
-          await esperar(RETRY_DELAY_MS);
-          continue;
-        }
-        const errSobrecarga = new Error(
-          `Alta demanda en Gemini API (${modeloPrincipal}): ${err.message}`
-        );
-        errSobrecarga.isOverload = true;
-        errSobrecarga.httpStatus = err.httpStatus;
-        throw errSobrecarga;
+  for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
+    const groqData = await llamarGroqUnaVez(groqApiKey, groqModel, messages);
+    const choice = groqData?.choices?.[0];
+    const assistantMsg = choice?.message;
+    const toolCalls = Array.isArray(assistantMsg?.tool_calls) ? assistantMsg.tool_calls : [];
+
+    if (toolCalls.length === 0) {
+      respuestaFinal = String(assistantMsg?.content || '').trim();
+      break;
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: assistantMsg.content || null,
+      tool_calls: toolCalls
+    });
+
+    for (const tc of toolCalls) {
+      const toolName = String(tc?.function?.name || '').trim();
+      let toolArgs = {};
+      try {
+        toolArgs = tc?.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+      } catch {
+        toolArgs = {};
       }
-      throw new Error(`Error en Gemini API (${modeloPrincipal}): ${err.message}`);
+      const resultadoTool = await ejecutarHerramientaNivel1(
+        appsScriptUrl,
+        sessionToken,
+        toolName,
+        toolArgs,
+        toolsUsed
+      );
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        name: toolName,
+        content: JSON.stringify(resultadoTool)
+      });
     }
   }
 
-  const errFinal = new Error(ultimoError?.message || 'Sobrecarga en Gemini API');
-  errFinal.isOverload = true;
-  throw errFinal;
+  if (!respuestaFinal) {
+    throw new Error('Groq no devolvió una respuesta textual.');
+  }
+
+  return {
+    reply: respuestaFinal,
+    toolsUsed,
+    model: groqModel,
+    modelStatusMessage: 'Groq Llama 3.3 • Nivel 1'
+  };
 }
 
+async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
+  const resp = await fetchConTimeout(
+    endpoint,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': geminiApiKey
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: SYSTEM_INSTRUCTION }]
+        },
+        contents,
+        tools: GEMINI_TOOLS,
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 2048
+        }
+      })
+    },
+    GEMINI_TIMEOUT_MS
+  );
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const detalle = data?.error?.message || `HTTP ${resp.status}`;
+    const err = new Error(detalle);
+    err.httpStatus = resp.status;
+    throw err;
+  }
+  return data;
+}
+
+async function ejecutarCicloGemini({ geminiApiKey, geminiModel, appsScriptUrl, sessionToken, message, history }) {
+  const contents = [
+    ...normalizarHistorialParaGemini(history),
+    { role: 'user', parts: [{ text: message }] }
+  ];
+  const toolsUsed = [];
+  let respuestaFinal = '';
+
+  for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
+    const geminiData = await llamarGeminiUnaVez(geminiApiKey, geminiModel, contents);
+    const candidate = geminiData?.candidates?.[0];
+    const modelContent = candidate?.content;
+    const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
+
+    const functionCalls = parts
+      .filter((p) => p && p.functionCall && p.functionCall.name)
+      .map((p) => p.functionCall);
+
+    if (functionCalls.length === 0) {
+      respuestaFinal = parts
+        .filter((p) => typeof p?.text === 'string')
+        .map((p) => p.text)
+        .join('\n')
+        .trim();
+      break;
+    }
+
+    contents.push({ role: 'model', parts });
+
+    const responseParts = [];
+    for (const call of functionCalls) {
+      const toolName = String(call.name || '').trim();
+      const toolArgs = call.args && typeof call.args === 'object' ? call.args : {};
+      const resultadoTool = await ejecutarHerramientaNivel1(
+        appsScriptUrl,
+        sessionToken,
+        toolName,
+        toolArgs,
+        toolsUsed
+      );
+      responseParts.push({
+        functionResponse: {
+          name: toolName,
+          response: resultadoTool
+        }
+      });
+    }
+
+    contents.push({ role: 'user', parts: responseParts });
+  }
+
+  if (!respuestaFinal) {
+    throw new Error('Gemini no devolvió una respuesta textual.');
+  }
+
+  return {
+    reply: respuestaFinal,
+    toolsUsed,
+    model: geminiModel
+  };
+}
+
+const PALABRAS_RELLENO_BUSQUEDA = new Set([
+  'cual',
+  'cuales',
+  'es',
+  'son',
+  'el',
+  'la',
+  'los',
+  'las',
+  'un',
+  'una',
+  'unos',
+  'unas',
+  'de',
+  'del',
+  'al',
+  'a',
+  'en',
+  'por',
+  'para',
+  'con',
+  'me',
+  'te',
+  'se',
+  'su',
+  'sus',
+  'cuit',
+  'cuil',
+  'dni',
+  'cliente',
+  'clientes',
+  'contribuyente',
+  'buscar',
+  'buscame',
+  'busca',
+  'mostrame',
+  'mostrar',
+  'dame',
+  'decime',
+  'ver',
+  'datos',
+  'dato',
+  'ficha',
+  'info',
+  'informacion',
+  'quien',
+  'quienes',
+  'estado',
+  'categoria',
+  'cuota',
+  'modalidad',
+  'arca',
+  'hola',
+  'favor',
+  'necesito',
+  'quiero',
+  'saber',
+  'tiene',
+  'tienen',
+  'esta',
+  'estan'
+]);
+
 function extraerQueryCliente(message) {
-  const matchCuitGuiones = String(message || '').match(/\b(\d{2}-\d{8}-\d)\b/);
+  const textoOrig = String(message || '').trim();
+  const matchCuitGuiones = textoOrig.match(/\b(\d{2}-\d{8}-\d)\b/);
   if (matchCuitGuiones) return matchCuitGuiones[1].replace(/\D/g, '');
 
-  const matchCuit11 = String(message || '').match(/\b(\d{11})\b/);
+  const matchCuit11 = textoOrig.match(/\b(\d{11})\b/);
   if (matchCuit11) return matchCuit11[1];
 
-  // Intentar extraer nombre/razón social luego de "cliente", "contribuyente" o "buscar"
-  const matchNombre = String(message || '').match(
-    /(?:cliente|contribuyente|ficha\s+de|buscar(?:\s+a)?)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9.\s&'-]{2,60})/i
-  );
-  if (matchNombre && matchNombre[1]) {
-    const limpio = matchNombre[1]
-      .replace(/[¿?¡!,.;:]+$/g, '')
-      .replace(/^(el|la|de|del|al|un|una)\s+/i, '')
-      .trim();
-    if (limpio && !/^(tienen|con|pendiente|vep|honorario)/i.test(limpio)) {
-      return limpio;
-    }
+  const matchDni = textoOrig.match(/\b(\d{1,2}\.?\d{3}\.?\d{3})\b/);
+  if (matchDni) {
+    const dig = matchDni[1].replace(/\D/g, '');
+    if (dig.length >= 7 && dig.length <= 8) return dig;
   }
-  return '';
+
+  const limpio = normalizarTextoPlano(textoOrig)
+    .replace(/[¿?¡!,.;:()[\]{}"'\/\\]+/g, ' ')
+    .split(/\s+/)
+    .filter((tok) => tok && tok.length > 1 && !PALABRAS_RELLENO_BUSQUEDA.has(tok))
+    .join(' ')
+    .trim();
+
+  return limpio;
 }
 
 function formatearRespuestaVeps(data) {
@@ -516,7 +891,9 @@ async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, messa
   const tieneVencOAlerta = /vencim|alerta/.test(msgNorm);
   const tieneNormativa = /normativ|regla|criterio|vigencia|art\.?\s*20|base\s+de\s+conocimiento/.test(msgNorm);
   const tieneCuit11 = /\b\d{2}-?\d{8}-?\d\b/.test(String(message || ''));
-  const tieneCliente = /\bcliente\b|\bcontribuyente\b/.test(msgNorm) || tieneCuit11;
+  const mencionaBusquedaPersona =
+    /\b(cuit|cuil|dni|cliente|contribuyente)\b|datos\s+de|quien\s+es/.test(msgNorm) || tieneCuit11;
+  const sinOtraIntencion = !tieneVep && !tieneHonorario && !tieneVencOAlerta && !tieneNormativa;
 
   const toolsUsed = [];
   const bloquesTexto = [];
@@ -593,21 +970,26 @@ async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, messa
     bloquesTexto.push(formatearRespuestaNormativa(dataNorm));
   }
 
-  // Solo disparar búsqueda de cliente si tiene CUIT de 11 dígitos o menciona "cliente" sin ser una consulta genérica de VEP/honorarios
+  // Búsqueda directa de cliente: si menciona cuit/cuil/dni/cliente/datos de/quien es,
+  // o si no coincidió con VEP/honorarios/vencimientos/normativa, limpiar palabras de relleno y consultar.
   const queryCliente = extraerQueryCliente(message);
-  if (tieneCuit11 || (tieneCliente && queryCliente && !tieneVep && !tieneHonorario && !tieneNormativa)) {
+  if (
+    tieneCuit11 ||
+    (mencionaBusquedaPersona && queryCliente && !tieneVep && !tieneHonorario) ||
+    (sinOtraIntencion && queryCliente.length >= 2)
+  ) {
     const dataCli = await ejecutarAccion('buscar_cliente', 'admin_buscar_cliente', {
       query: queryCliente || message
     });
     bloquesTexto.push(formatearRespuestaCliente(dataCli));
   }
 
-  const etiquetaDiscreta = '(Modo directo Nivel 1 por alta demanda en Gemini API)';
+  const etiquetaDiscreta = '(Modo directo Nivel 1 • consulta directa a planillas)';
 
   if (bloquesTexto.length === 0) {
     return {
       reply:
-        `Gemini API reporta alta demanda momentánea (503/429). Podés consultar directamente sin esperar mencionando **VEP**, **honorarios**, **vencimientos / alertas**, **normativa / criterios** o un **CUIT de 11 dígitos / cliente**.\n\n${etiquetaDiscreta}`,
+        `No pude interpretar la consulta en modo directo. Probá indicando un nombre/CUIT de cliente, **VEP**, **honorarios**, **vencimientos / alertas** o **normativa / criterios**.\n\n${etiquetaDiscreta}`,
       toolsUsed
     };
   }
@@ -685,15 +1067,10 @@ export default async function handler(req, res) {
   }
 
   // 1. Validar variables de entorno requeridas en Vercel
+  const groqApiKey = String(process.env.GROQ_API_KEY || '').trim();
   const geminiApiKey = String(process.env.GEMINI_API_KEY || '').trim();
   const appsScriptUrl = String(process.env.APPS_SCRIPT_URL || '').trim();
 
-  if (!geminiApiKey) {
-    return res.status(500).json({
-      ok: false,
-      error: 'Falta configurar GEMINI_API_KEY en las Variables de Entorno de Vercel.'
-    });
-  }
   if (!appsScriptUrl || !appsScriptUrl.startsWith('https://script.google.com/')) {
     return res.status(500).json({
       ok: false,
@@ -724,7 +1101,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ ok: false, error: 'Escribí una consulta antes de enviar.' });
   }
 
-  // 3. Verificar sessionToken contra Google Apps Script ANTES de llamar a Gemini
+  // 3. Verificar sessionToken contra Google Apps Script ANTES de llamar a cualquier motor IA
   try {
     const verif = await llamarAppsScriptAdmin(appsScriptUrl, 'admin_verify_session', {
       sessionToken
@@ -741,6 +1118,12 @@ export default async function handler(req, res) {
 
   // 3B. Modo diagnóstico autenticado: listar modelos disponibles para la GEMINI_API_KEY actual
   if (action === 'list_models') {
+    if (!geminiApiKey) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Falta configurar GEMINI_API_KEY en Vercel para listar los modelos de Gemini.'
+      });
+    }
     try {
       const diagnosticoModelos = await listarModelosDisponiblesGemini(geminiApiKey);
       return res.status(200).json(diagnosticoModelos);
@@ -752,151 +1135,90 @@ export default async function handler(req, res) {
     }
   }
 
-  // 4. Bucle de conversación con modelo principal (gemini-3.8-flash) + respaldo determinístico local Nivel 1
+  const groqModel = obtenerModeloGroq();
   const geminiModel = obtenerModeloGemini();
 
-  const contents = [
-    ...normalizarHistorialParaGemini(history),
-    { role: 'user', parts: [{ text: message }] }
-  ];
+  // 4A. MOTOR PRIORITARIO: Groq (llama-3.3-70b-versatile, timeout 6000 ms) si existe GROQ_API_KEY
+  if (groqApiKey) {
+    try {
+      const resGroq = await ejecutarCicloGroq({
+        groqApiKey,
+        groqModel,
+        appsScriptUrl,
+        sessionToken,
+        message,
+        history
+      });
+      return res.status(200).json({
+        ok: true,
+        reply: resGroq.reply,
+        toolsUsed: resGroq.toolsUsed,
+        model: resGroq.model,
+        primaryModel: groqModel,
+        usedFallback: false,
+        modelStatusMessage: resGroq.modelStatusMessage,
+        timestamp: new Date().toISOString()
+      });
+    } catch (errGroq) {
+      if (errGroq?.sessionExpired || /sesi[oó]n\s+expirada/i.test(errGroq?.message || '')) {
+        return res.status(401).json({ ok: false, error: 'Sesión expirada' });
+      }
+      // Si Groq falla o excede 6000 ms, continuar automáticamente a Gemini y luego respaldo directo
+    }
+  }
 
-  const toolsUsed = [];
+  // 4B. MOTOR SECUNDARIO: Gemini (gemini-3.8-flash, timeout corto 3500 ms)
+  if (geminiApiKey) {
+    try {
+      const resGemini = await ejecutarCicloGemini({
+        geminiApiKey,
+        geminiModel,
+        appsScriptUrl,
+        sessionToken,
+        message,
+        history
+      });
+      const esRespaldoDeGroq = Boolean(groqApiKey);
+      return res.status(200).json({
+        ok: true,
+        reply: resGemini.reply,
+        toolsUsed: resGemini.toolsUsed,
+        model: resGemini.model,
+        primaryModel: esRespaldoDeGroq ? groqModel : geminiModel,
+        usedFallback: esRespaldoDeGroq,
+        modelStatusMessage: esRespaldoDeGroq
+          ? `Gemini (${resGemini.model}) • Respaldo Nivel 1`
+          : `Gemini (${resGemini.model}) • Nivel 1`,
+        timestamp: new Date().toISOString()
+      });
+    } catch (errGemini) {
+      if (errGemini?.sessionExpired || /sesi[oó]n\s+expirada/i.test(errGemini?.message || '')) {
+        return res.status(401).json({ ok: false, error: 'Sesión expirada' });
+      }
+      // Si Gemini devuelve 503/429/timeout o falla, pasar al respaldo determinístico Nivel 1
+    }
+  }
 
+  // 4C. RESPALDO DETERMINÍSTICO LOCAL NIVEL 1 (sin IA, nunca bloquea /admin)
   try {
-    let respuestaFinal = '';
-
-    for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
-      const llamada = await llamarGeminiPrincipalConReintento(geminiApiKey, geminiModel, contents);
-      const geminiData = llamada.data;
-      const candidate = geminiData?.candidates?.[0];
-      const modelContent = candidate?.content;
-      const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
-
-      const functionCalls = parts
-        .filter((p) => p && p.functionCall && p.functionCall.name)
-        .map((p) => p.functionCall);
-
-      if (functionCalls.length === 0) {
-        respuestaFinal = parts
-          .filter((p) => typeof p?.text === 'string')
-          .map((p) => p.text)
-          .join('\n')
-          .trim();
-        break;
-      }
-
-      // Agregar turno del modelo con sus functionCalls
-      contents.push({
-        role: 'model',
-        parts
-      });
-
-      const responseParts = [];
-
-      for (const call of functionCalls) {
-        const toolName = String(call.name || '').trim();
-        const toolArgs = call.args && typeof call.args === 'object' ? call.args : {};
-        const appsScriptAction = MAPA_ACCIONES_APPS_SCRIPT[toolName];
-
-        if (!appsScriptAction) {
-          const errObj = {
-            ok: false,
-            error: `Herramienta no autorizada en Nivel 1: ${toolName}`
-          };
-          toolsUsed.push({
-            name: toolName,
-            args: toolArgs,
-            ok: false,
-            fuentes: [],
-            avisos: [errObj.error]
-          });
-          responseParts.push({
-            functionResponse: {
-              name: toolName,
-              response: errObj
-            }
-          });
-          continue;
-        }
-
-        const resultadoTool = await llamarAppsScriptAdmin(appsScriptUrl, appsScriptAction, {
-          ...toolArgs,
-          sessionToken
-        });
-
-        if (resultadoTool && resultadoTool.ok === false && /sesi[oó]n\s+expirada/i.test(resultadoTool.error || '')) {
-          return res.status(401).json({ ok: false, error: 'Sesión expirada' });
-        }
-
-        toolsUsed.push({
-          name: toolName,
-          args: toolArgs,
-          ok: Boolean(resultadoTool?.ok),
-          fuentes: Array.isArray(resultadoTool?.fuentesConsultadas)
-            ? resultadoTool.fuentesConsultadas
-            : [],
-          avisos: Array.isArray(resultadoTool?.avisos) ? resultadoTool.avisos : []
-        });
-
-        responseParts.push({
-          functionResponse: {
-            name: toolName,
-            response: resultadoTool || { ok: false, error: 'Sin respuesta del servidor.' }
-          }
-        });
-      }
-
-      // Devolver resultados reales de las herramientas a Gemini para redactar la respuesta
-      contents.push({
-        role: 'user',
-        parts: responseParts
-      });
-    }
-
-    if (!respuestaFinal) {
-      respuestaFinal =
-        'Se consultaron las herramientas del estudio, pero el modelo no generó un resumen textual. Intentá reformular la consulta.';
-    }
-
+    const respaldo = await ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, message);
     return res.status(200).json({
       ok: true,
-      reply: respuestaFinal,
-      toolsUsed,
-      model: geminiModel,
-      primaryModel: geminiModel,
-      usedFallback: false,
-      modelStatusMessage: `Respondido por modelo principal (${geminiModel})`,
+      reply: respaldo.reply,
+      toolsUsed: respaldo.toolsUsed,
+      model: 'modo-directo-nivel-1',
+      primaryModel: groqApiKey ? groqModel : geminiModel,
+      usedFallback: true,
+      modelStatusMessage: 'Modo directo Nivel 1 • Planillas ERP',
       timestamp: new Date().toISOString()
     });
-  } catch (err) {
-    // Respaldo determinístico local ante 503 ("high demand") o 429 para que /admin nunca quede bloqueado
-    if (err?.isOverload || esErrorSobrecarga(err?.httpStatus, err?.message)) {
-      try {
-        const respaldo = await ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, message);
-        return res.status(200).json({
-          ok: true,
-          reply: respaldo.reply,
-          toolsUsed: respaldo.toolsUsed,
-          model: 'modo-directo-nivel-1',
-          primaryModel: geminiModel,
-          usedFallback: true,
-          modelStatusMessage: '(Modo directo Nivel 1 por alta demanda en Gemini API)',
-          timestamp: new Date().toISOString()
-        });
-      } catch (errRespaldo) {
-        if (errRespaldo?.sessionExpired || /sesi[oó]n\s+expirada/i.test(errRespaldo?.message || '')) {
-          return res.status(401).json({ ok: false, error: 'Sesión expirada' });
-        }
-        return res.status(502).json({
-          ok: false,
-          error: `Gemini API con alta demanda y fallo en modo directo Nivel 1: ${errRespaldo?.message}`
-        });
-      }
+  } catch (errRespaldo) {
+    if (errRespaldo?.sessionExpired || /sesi[oó]n\s+expirada/i.test(errRespaldo?.message || '')) {
+      return res.status(401).json({ ok: false, error: 'Sesión expirada' });
     }
-
-    return res.status(500).json({
+    return res.status(502).json({
       ok: false,
-      error: err?.message || 'Error inesperado ejecutando GR Cerebro Central de IA.'
+      error: `No se pudo completar la consulta en modo directo Nivel 1: ${errRespaldo?.message}`
     });
   }
 }
