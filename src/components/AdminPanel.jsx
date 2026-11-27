@@ -216,6 +216,13 @@ export default function AdminPanel() {
           text: res.reply || 'Sin respuesta del asistente.',
           toolsUsed: Array.isArray(res.toolsUsed) ? res.toolsUsed : [],
           model: res.model || 'gemini-3.8-flash',
+          primaryModel: res.primaryModel || 'gemini-3.8-flash',
+          usedFallback: Boolean(res.usedFallback),
+          modelStatusMessage:
+            res.modelStatusMessage ||
+            (res.usedFallback
+              ? `Respondido por modelo de respaldo (${res.model || 'alternativo'})`
+              : `Respondido por modelo principal (${res.model || 'gemini-3.8-flash'})`),
           hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
         };
         setMensajesChat((prev) => [...prev, nuevoMsgIA]);
@@ -733,12 +740,29 @@ export default function AdminPanel() {
                         </div>
 
                         <div
-                          className={`text-[10px] text-right ${
-                            esUsuario ? 'text-petroleo-100/80' : 'text-slate-400'
+                          className={`pt-1.5 flex items-center justify-between gap-2 flex-wrap text-[10px] ${
+                            esUsuario
+                              ? 'justify-end text-petroleo-100/80'
+                              : 'border-t border-slate-100 text-slate-500'
                           }`}
                         >
-                          {msg.hora}
-                          {!esUsuario && msg.model ? ` • ${msg.model}` : ''}
+                          {!esUsuario && (
+                            <span
+                              className={`inline-flex items-center gap-1 font-extrabold px-2 py-0.5 rounded-full border ${
+                                msg.usedFallback
+                                  ? 'bg-amber-50 text-amber-900 border-amber-200'
+                                  : 'bg-petroleo-50 text-[#0F4C5C] border-petroleo/15'
+                              }`}
+                            >
+                              <span>
+                                {msg.modelStatusMessage ||
+                                  (msg.usedFallback
+                                    ? `Modelo de respaldo (${msg.model})`
+                                    : `Modelo principal (${msg.model || 'gemini-3.8-flash'})`)}
+                              </span>
+                            </span>
+                          )}
+                          <span className="ml-auto">{msg.hora}</span>
                         </div>
                       </div>
                     </div>

@@ -18,10 +18,41 @@
  */
 
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+const DEFAULT_FALLBACK_MODELS = ['gemini-3.8-flash-lite', 'gemini-3.5-flash'];
+const RETRY_DELAY_MS = 1200;
 const MAX_TOOL_ROUNDS = 5;
 
 function obtenerModeloGemini() {
   return String(process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+}
+
+function obtenerModelosRespaldo(modeloPrincipal) {
+  const envLista = String(process.env.GEMINI_FALLBACK_MODELS || '').trim();
+  const base = envLista
+    ? envLista.split(',').map((m) => m.trim()).filter(Boolean)
+    : DEFAULT_FALLBACK_MODELS;
+  return base.filter((m, idx, arr) => m && m !== modeloPrincipal && arr.indexOf(m) === idx);
+}
+
+function esperar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function esErrorSobrecarga(status, mensaje = '') {
+  return (
+    status === 503 ||
+    status === 429 ||
+    /high\s+demand|overloaded|unavailable|rate\s*limit|too\s+many\s+requests|resource_exhausted|quota/i.test(
+      String(mensaje || '')
+    )
+  );
+}
+
+function esErrorModeloNoDisponible(status, mensaje = '') {
+  return (
+    status === 404 ||
+    /not\s+found|no\s+longer\s+available|unsupported\s+model/i.test(String(mensaje || ''))
+  );
 }
 
 const SYSTEM_INSTRUCTION = `Sos el asistente técnico de inteligencia y control de GR Servicios Contables (Estudio del Contador Público Germán Read, Salta, Argentina), operando en el módulo privado /admin bajo estricto Nivel 1 (Solo Lectura).
@@ -140,7 +171,7 @@ async function llamarAppsScriptAdmin(appsScriptUrl, action, payload) {
   return json;
 }
 
-async function llamarGemini(geminiApiKey, geminiModel, contents) {
+async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
   const resp = await fetch(endpoint, {
     method: 'POST',
@@ -164,9 +195,83 @@ async function llamarGemini(geminiApiKey, geminiModel, contents) {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     const detalle = data?.error?.message || `HTTP ${resp.status}`;
-    throw new Error(`Error en Gemini API: ${detalle}`);
+    const err = new Error(detalle);
+    err.httpStatus = resp.status;
+    throw err;
   }
   return data;
+}
+
+/**
+ * Llama a Gemini con resiliencia ante sobrecarga (503 / high demand / 429):
+ * 1) Intenta con el modelo principal.
+ * 2) Si falla por sobrecarga (503/429/high demand), espera 1200 ms y reintenta el modelo principal.
+ * 3) Si vuelve a fallar por sobrecarga, hace fallback automático a modelos alternativos vigentes.
+ */
+async function llamarGeminiConResiliencia(geminiApiKey, modeloPrincipal, contents) {
+  let ultimoError = null;
+  let huboSobrecargaPrincipal = false;
+
+  // Intento 1 + Reintento automático (espera 1200 ms) sobre el modelo principal
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      const data = await llamarGeminiUnaVez(geminiApiKey, modeloPrincipal, contents);
+      return {
+        data,
+        modelUsed: modeloPrincipal,
+        usedFallback: false,
+        retriedPrimary: intento > 1
+      };
+    } catch (err) {
+      ultimoError = err;
+      const sobrecarga = esErrorSobrecarga(err.httpStatus, err.message);
+      const noDisponible = esErrorModeloNoDisponible(err.httpStatus, err.message);
+
+      if (sobrecarga) {
+        huboSobrecargaPrincipal = true;
+        if (intento === 1) {
+          await esperar(RETRY_DELAY_MS);
+          continue;
+        }
+        break;
+      }
+
+      if (noDisponible) {
+        break;
+      }
+
+      // Error no recuperable (ej. API key inválida 400/401/403): no ocultar con fallback
+      throw new Error(`Error en Gemini API (${modeloPrincipal}): ${err.message}`);
+    }
+  }
+
+  // Fallback automático a modelos alternativos vigentes
+  const modelosRespaldo = obtenerModelosRespaldo(modeloPrincipal);
+  for (const modeloAlt of modelosRespaldo) {
+    try {
+      const data = await llamarGeminiUnaVez(geminiApiKey, modeloAlt, contents);
+      return {
+        data,
+        modelUsed: modeloAlt,
+        usedFallback: true,
+        retriedPrimary: false,
+        fallbackReason: huboSobrecargaPrincipal ? 'alta demanda / límite de tasa' : 'modelo principal no disponible'
+      };
+    } catch (errAlt) {
+      ultimoError = errAlt;
+      if (
+        esErrorSobrecarga(errAlt.httpStatus, errAlt.message) ||
+        esErrorModeloNoDisponible(errAlt.httpStatus, errAlt.message)
+      ) {
+        continue;
+      }
+      throw new Error(`Error en Gemini API (${modeloAlt}): ${errAlt.message}`);
+    }
+  }
+
+  throw new Error(
+    `Los modelos de Gemini (${[modeloPrincipal, ...modelosRespaldo].join(', ')}) están momentáneamente con alta demanda o saturados. Intentá nuevamente en unos segundos. Detalle: ${ultimoError?.message || '503/429'}`
+  );
 }
 
 function normalizarHistorialParaGemini(historyRaw) {
@@ -247,8 +352,12 @@ export default async function handler(req, res) {
     });
   }
 
-  // 4. Bucle de conversación con Gemini 3.8 Flash (o GEMINI_MODEL) + Function Calling (Nivel 1)
+  // 4. Bucle de conversación con Gemini 3.8 Flash (con retry 1200ms + fallback automático) + Function Calling (Nivel 1)
   const geminiModel = obtenerModeloGemini();
+  let ultimoModeloUsado = geminiModel;
+  let usoRespaldo = false;
+  let motivoRespaldo = '';
+
   const contents = [
     ...normalizarHistorialParaGemini(history),
     { role: 'user', parts: [{ text: message }] }
@@ -260,7 +369,13 @@ export default async function handler(req, res) {
     let respuestaFinal = '';
 
     for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
-      const geminiData = await llamarGemini(geminiApiKey, geminiModel, contents);
+      const llamada = await llamarGeminiConResiliencia(geminiApiKey, geminiModel, contents);
+      const geminiData = llamada.data;
+      ultimoModeloUsado = llamada.modelUsed || geminiModel;
+      if (llamada.usedFallback) {
+        usoRespaldo = true;
+        motivoRespaldo = llamada.fallbackReason || 'alta demanda';
+      }
       const candidate = geminiData?.candidates?.[0];
       const modelContent = candidate?.content;
       const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
@@ -351,11 +466,18 @@ export default async function handler(req, res) {
         'Se consultaron las herramientas del estudio, pero el modelo no generó un resumen textual. Intentá reformular la consulta.';
     }
 
+    const modelStatusMessage = usoRespaldo
+      ? `Respondido por modelo de respaldo (${ultimoModeloUsado}) por ${motivoRespaldo || 'alta demanda'} en ${geminiModel}`
+      : `Respondido por modelo principal (${ultimoModeloUsado})`;
+
     return res.status(200).json({
       ok: true,
       reply: respuestaFinal,
       toolsUsed,
-      model: geminiModel,
+      model: ultimoModeloUsado,
+      primaryModel: geminiModel,
+      usedFallback: usoRespaldo,
+      modelStatusMessage,
       timestamp: new Date().toISOString()
     });
   } catch (err) {
