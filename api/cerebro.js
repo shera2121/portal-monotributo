@@ -18,25 +18,11 @@
  */
 
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-const DEFAULT_FALLBACK_MODELS = [
-  'gemini-3.8-flash-lite',
-  'gemini-2.5-flash-lite',
-  'gemini-3.8-pro',
-  'gemini-2.0-flash'
-];
 const RETRY_DELAY_MS = 800;
 const MAX_TOOL_ROUNDS = 5;
 
 function obtenerModeloGemini() {
   return String(process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
-}
-
-function obtenerModelosRespaldo(modeloPrincipal) {
-  const envLista = String(process.env.GEMINI_FALLBACK_MODELS || '').trim();
-  const base = envLista
-    ? envLista.split(',').map((m) => m.trim()).filter(Boolean)
-    : DEFAULT_FALLBACK_MODELS;
-  return base.filter((m, idx, arr) => m && m !== modeloPrincipal && arr.indexOf(m) === idx);
 }
 
 function esperar(ms) {
@@ -53,11 +39,22 @@ function esErrorSobrecarga(status, mensaje = '') {
   );
 }
 
-function esErrorModeloNoDisponible(status, mensaje = '') {
-  return (
-    status === 404 ||
-    /not\s+found|no\s+longer\s+available|unsupported\s+model/i.test(String(mensaje || ''))
-  );
+function normalizarTextoPlano(str = '') {
+  return String(str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function formatARSLocal(valor) {
+  const num = Number(valor);
+  if (!Number.isFinite(num) || num === 0) return '$ 0,00';
+  const formatted = new Intl.NumberFormat('es-AR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Math.abs(num));
+  return `${num < 0 ? '-' : ''}$ ${formatted}`;
 }
 
 const SYSTEM_INSTRUCTION = `Sos el asistente técnico de inteligencia y control de GR Servicios Contables (Estudio del Contador Público Germán Read, Salta, Argentina), operando en el módulo privado /admin bajo estricto Nivel 1 (Solo Lectura).
@@ -208,77 +205,360 @@ async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
 }
 
 /**
- * Llama a Gemini recorriendo la cadena ordenada de modelos con resiliencia ante
- * sobrecarga (503 / high demand / 429) o indisponibilidad (404):
- * Orden por defecto:
- *   1) process.env.GEMINI_MODEL || "gemini-3.8-flash"
- *   2) "gemini-3.8-flash-lite"
- *   3) "gemini-2.5-flash-lite"
- *   4) "gemini-3.8-pro"
- *   5) "gemini-2.0-flash"
- * Entre cada intento fallido por 503/429 espera 800 ms antes de probar el siguiente.
+ * Llama únicamente al modelo principal (gemini-3.8-flash).
+ * Si recibe error 503 ("high demand") o 429, espera 800 ms y reintenta 1 vez.
+ * Si vuelve a fallar por sobrecarga, lanza error marcado con `isOverload = true`
+ * para activar el respaldo determinístico local de Nivel 1 sin bloquear /admin.
  */
-async function llamarGeminiConResiliencia(geminiApiKey, modeloPrincipal, contents) {
-  const modelosRespaldo = obtenerModelosRespaldo(modeloPrincipal);
-  const cadenaModelos = [modeloPrincipal, ...modelosRespaldo];
-  const intentosFallidos = [];
+async function llamarGeminiPrincipalConReintento(geminiApiKey, modeloPrincipal, contents) {
   let ultimoError = null;
-  let motivoPrincipal = 'alta demanda / límite de tasa';
 
-  for (let i = 0; i < cadenaModelos.length; i++) {
-    const modeloActual = cadenaModelos[i];
-    const esPrincipal = i === 0;
-    const haySiguiente = i < cadenaModelos.length - 1;
-
+  for (let intento = 1; intento <= 2; intento++) {
     try {
-      const data = await llamarGeminiUnaVez(geminiApiKey, modeloActual, contents);
-      return {
-        data,
-        modelUsed: modeloActual,
-        usedFallback: !esPrincipal,
-        fallbackReason: !esPrincipal ? motivoPrincipal : '',
-        failedAttempts: intentosFallidos
-      };
+      const data = await llamarGeminiUnaVez(geminiApiKey, modeloPrincipal, contents);
+      return { data, modelUsed: modeloPrincipal };
     } catch (err) {
       ultimoError = err;
       const sobrecarga = esErrorSobrecarga(err.httpStatus, err.message);
-      const noDisponible = esErrorModeloNoDisponible(err.httpStatus, err.message);
-
-      intentosFallidos.push({
-        model: modeloActual,
-        status: err.httpStatus || null,
-        error: err.message
-      });
-
-      if (esPrincipal) {
-        motivoPrincipal = sobrecarga
-          ? 'alta demanda / límite de tasa'
-          : 'modelo principal no disponible';
-      }
-
       if (sobrecarga) {
-        if (haySiguiente) {
+        if (intento === 1) {
           await esperar(RETRY_DELAY_MS);
           continue;
         }
-        break;
+        const errSobrecarga = new Error(
+          `Alta demanda en Gemini API (${modeloPrincipal}): ${err.message}`
+        );
+        errSobrecarga.isOverload = true;
+        errSobrecarga.httpStatus = err.httpStatus;
+        throw errSobrecarga;
       }
-
-      if (noDisponible) {
-        if (haySiguiente) {
-          continue;
-        }
-        break;
-      }
-
-      // Error no recuperable (ej. API key inválida 400/401/403): devolver inmediatamente
-      throw new Error(`Error en Gemini API (${modeloActual}): ${err.message}`);
+      throw new Error(`Error en Gemini API (${modeloPrincipal}): ${err.message}`);
     }
   }
 
-  throw new Error(
-    `Los modelos de Gemini (${cadenaModelos.join(' → ')}) no pudieron responder por alta demanda o indisponibilidad. Intentá nuevamente en unos segundos. Último detalle: ${ultimoError?.message || '503/429'}`
+  const errFinal = new Error(ultimoError?.message || 'Sobrecarga en Gemini API');
+  errFinal.isOverload = true;
+  throw errFinal;
+}
+
+function extraerQueryCliente(message) {
+  const matchCuitGuiones = String(message || '').match(/\b(\d{2}-\d{8}-\d)\b/);
+  if (matchCuitGuiones) return matchCuitGuiones[1].replace(/\D/g, '');
+
+  const matchCuit11 = String(message || '').match(/\b(\d{11})\b/);
+  if (matchCuit11) return matchCuit11[1];
+
+  // Intentar extraer nombre/razón social luego de "cliente", "contribuyente" o "buscar"
+  const matchNombre = String(message || '').match(
+    /(?:cliente|contribuyente|ficha\s+de|buscar(?:\s+a)?)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9.\s&'-]{2,60})/i
   );
+  if (matchNombre && matchNombre[1]) {
+    const limpio = matchNombre[1]
+      .replace(/[¿?¡!,.;:]+$/g, '')
+      .replace(/^(el|la|de|del|al|un|una)\s+/i, '')
+      .trim();
+    if (limpio && !/^(tienen|con|pendiente|vep|honorario)/i.test(limpio)) {
+      return limpio;
+    }
+  }
+  return '';
+}
+
+function formatearRespuestaVeps(data) {
+  const lineas = [];
+  const res = data?.resumen || {};
+  lineas.push(`**Resumen de VEPs (Filtro: ${data?.filtroEstado || 'Todos'})**`);
+  lineas.push(
+    `- Solicitudes App PWA encontradas: **${res.solicitudesPwaEncontradas ?? 0}** | Directorio Clientes: **${res.clientesDirectorioEncontrados ?? 0}** | Control Pagos VEP: **${res.pagosControlVepEncontrados ?? 0}**`
+  );
+
+  const sol = Array.isArray(data?.solicitudesPwa) ? data.solicitudesPwa : [];
+  if (sol.length > 0) {
+    lineas.push('');
+    lineas.push('**Solicitudes en "DEV_Registro de Comprobantes → Solicitudes App PWA":**');
+    sol.slice(0, 15).forEach((item) => {
+      lineas.push(
+        `- **${item.cliente}** (CUIT ${item.cuit}) • ${item.impuesto || 'VEP'} • Período: ${item.periodo || 'S/D'} • Importe: ${formatARSLocal(item.importe)} • Estado: **${item.estado}**${item.tienePdfAdjunto ? ' (PDF adjunto)' : ''}`
+      );
+    });
+  }
+
+  const dirVep = Array.isArray(data?.estadoDirectorioVep) ? data.estadoDirectorioVep : [];
+  if (dirVep.length > 0) {
+    lineas.push('');
+    lineas.push('**Estado mensual en "DEV_Registro de Comprobantes → Directorio Clientes":**');
+    dirVep.slice(0, 20).forEach((item) => {
+      lineas.push(
+        `- **${item.cliente}** (CUIT ${item.cuit} • Cat. ${item.categoria}) • Cuota: ${formatARSLocal(item.importe)} • Estado mes: **${item.estado}**`
+      );
+    });
+  }
+
+  const ctrl = Array.isArray(data?.controlPagosVep) ? data.controlPagosVep : [];
+  if (ctrl.length > 0 && sol.length === 0) {
+    lineas.push('');
+    lineas.push('**Últimos registros en "DEV_Registro de Comprobantes → Control Pagos VEP":**');
+    ctrl.slice(0, 10).forEach((item) => {
+      lineas.push(
+        `- **${item.cliente}** (CUIT ${item.cuit}) • Período: ${item.periodo || 'S/D'} • Importe: ${formatARSLocal(item.importe)} • Estado: **${item.estado}**`
+      );
+    });
+  }
+
+  if (sol.length === 0 && dirVep.length === 0 && ctrl.length === 0) {
+    lineas.push('- No se encontraron VEPs que coincidan con ese filtro en las hojas consultadas.');
+  }
+
+  const avisos = Array.isArray(data?.avisos) ? data.avisos : [];
+  if (avisos.length > 0) {
+    lineas.push('');
+    avisos.forEach((a) => lineas.push(`- Aviso: ${a}`));
+  }
+
+  return lineas.join('\n');
+}
+
+function formatearRespuestaHonorarios(data) {
+  const lineas = [];
+  const res = data?.resumen || {};
+  lineas.push(`**Estado de Honorarios (Filtro: ${data?.filtroEstado || 'Todos'})**`);
+  lineas.push(
+    `- Evaluados: **${res.totalEvaluados ?? 0}** | Pendientes: **${res.cantidadPendientes ?? 0}** | Vencidos: **${res.cantidadVencidos ?? 0}** | Verificar/Parcial: **${res.cantidadVerificarOParcial ?? 0}** | Pagados: **${res.cantidadPagados ?? 0}**`
+  );
+  if (res.montoPendienteEstimado > 0) {
+    lineas.push(`- Total estimado pendiente de cobro: **${formatARSLocal(res.montoPendienteEstimado)}**`);
+  }
+
+  const lista = Array.isArray(data?.clientesHonorarios) ? data.clientesHonorarios : [];
+  if (lista.length > 0) {
+    lineas.push('');
+    lineas.push('**Detalle en "DEV_Registro de Comprobantes → Directorio Clientes":**');
+    lista.slice(0, 25).forEach((c) => {
+      lineas.push(
+        `- **${c.cliente}** (CUIT ${c.cuit} • Cat. ${c.categoria}) • Honorario: ${formatARSLocal(c.importeHonorarios)} • Estado: **${c.estadoHonorarios}**`
+      );
+    });
+  } else {
+    lineas.push('- No hay clientes en ese estado en Directorio Clientes.');
+  }
+
+  const pagos = Array.isArray(data?.ultimosPagosControlHonorarios)
+    ? data.ultimosPagosControlHonorarios
+    : [];
+  if (pagos.length > 0) {
+    lineas.push('');
+    lineas.push('**Últimos pagos registrados en "DEV_Registro de Comprobantes → Control Honorarios":**');
+    pagos.slice(0, 5).forEach((p) => {
+      lineas.push(
+        `- **${p.cliente}** • Período: ${p.periodo || 'S/D'} • Pagado: ${formatARSLocal(p.importePagado)} • Estado: **${p.estado}** (${p.fechaRegistro || 's/f'})`
+      );
+    });
+  }
+
+  const avisos = Array.isArray(data?.avisos) ? data.avisos : [];
+  if (avisos.length > 0) {
+    lineas.push('');
+    avisos.forEach((a) => lineas.push(`- Aviso: ${a}`));
+  }
+
+  return lineas.join('\n');
+}
+
+function formatearRespuestaVencimientosAlertas(data) {
+  const lineas = [];
+  lineas.push('**Próximos Vencimientos y Alertas ARCA**');
+
+  const venc = data?.vencimientos;
+  if (venc) {
+    lineas.push('');
+    lineas.push(`**1. ${venc.libro || 'Control de Vencimientos'}:**`);
+    if (!venc.configurado) {
+      lineas.push(`- ${venc.aviso || 'Falta configurar SHEET_ID_VENCIMIENTOS en Propiedades del Script.'}`);
+    } else if (Array.isArray(venc.registros) && venc.registros.length > 0) {
+      venc.registros.slice(0, 12).forEach((reg) => {
+        const origen = reg._origen || venc.libro;
+        const campos = Object.entries(reg)
+          .filter(([k]) => k !== '_origen')
+          .slice(0, 5)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(' • ');
+        lineas.push(`- ${campos} _(${origen})_`);
+      });
+    } else {
+      lineas.push('- Sin registros cargados en las hojas principales de Control de Vencimientos.');
+    }
+  }
+
+  const al = data?.alertasArca;
+  if (al) {
+    lineas.push('');
+    lineas.push(`**2. ${al.libro || 'Control de Alertas ARCA'}:**`);
+    if (!al.configurado) {
+      lineas.push(`- ${al.aviso || 'Falta configurar SHEET_ID_ALERTAS_ARCA en Propiedades del Script.'}`);
+    } else if (Array.isArray(al.registros) && al.registros.length > 0) {
+      al.registros.slice(0, 12).forEach((reg) => {
+        const origen = reg._origen || al.libro;
+        const campos = Object.entries(reg)
+          .filter(([k]) => k !== '_origen')
+          .slice(0, 5)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(' • ');
+        lineas.push(`- ${campos} _(${origen})_`);
+      });
+    } else {
+      lineas.push('- Sin alertas recientes registradas en Control de Alertas ARCA.');
+    }
+  }
+
+  const avisos = Array.isArray(data?.avisos) ? data.avisos : [];
+  if (avisos.length > 0) {
+    lineas.push('');
+    avisos.forEach((a) => lineas.push(`- Aviso: ${a}`));
+  }
+
+  return lineas.join('\n');
+}
+
+function formatearRespuestaCliente(data) {
+  const lineas = [];
+  lineas.push(`**Búsqueda de Cliente ("${data?.query || ''}")**`);
+
+  const clientes = Array.isArray(data?.clientes) ? data.clientes : [];
+  if (clientes.length > 0) {
+    lineas.push('');
+    lineas.push('**Coincidencias en "DEV_Registro de Comprobantes → Directorio Clientes":**');
+    clientes.forEach((c) => {
+      lineas.push(
+        `- **${c.cliente}** • CUIT: ${c.cuit} • Cat. **${c.categoria}** (${c.actividad}) • Cuota: ${formatARSLocal(c.cuotaMonotributo)} • Estado VEP mes: **${c.estadoMesActualVep}** • Honorarios: ${formatARSLocal(c.importeHonorarios)} (**${c.estadoHonorarios}**) • Modalidad ARCA: **${c.modalidadArca}**${c.diagnosticoSemaforo ? ` • Semáforo: ${c.diagnosticoSemaforo}` : ''}`
+      );
+    });
+  } else {
+    lineas.push('- No se encontraron coincidencias en "DEV_Registro de Comprobantes → Directorio Clientes".');
+  }
+
+  const maestro = Array.isArray(data?.coincidenciasMaestro) ? data.coincidenciasMaestro : [];
+  if (maestro.length > 0) {
+    lineas.push('');
+    lineas.push('**Coincidencias adicionales en Excel Maestro:**');
+    maestro.slice(0, 8).forEach((m) => {
+      const campos = Object.entries(m.datos || {})
+        .slice(0, 5)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' • ');
+      lineas.push(`- **${m.origen}** (fila ${m.fila}): ${campos}`);
+    });
+  }
+
+  const avisos = Array.isArray(data?.avisos) ? data.avisos : [];
+  if (avisos.length > 0) {
+    lineas.push('');
+    avisos.forEach((a) => lineas.push(`- Aviso: ${a}`));
+  }
+
+  return lineas.join('\n');
+}
+
+/**
+ * Respaldo determinístico local de Nivel 1 (sin depender de Gemini API)
+ * para mantener operativo el panel /admin cuando Gemini devuelve 503/429.
+ */
+async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, message) {
+  const msgNorm = normalizarTextoPlano(message);
+  const tieneVep = /\bveps?\b/.test(msgNorm);
+  const tieneHonorario = /honorario/.test(msgNorm);
+  const tieneVencOAlerta = /vencim|alerta/.test(msgNorm);
+  const tieneCuit11 = /\b\d{2}-?\d{8}-?\d\b/.test(String(message || ''));
+  const tieneCliente = /\bcliente\b|\bcontribuyente\b/.test(msgNorm) || tieneCuit11;
+
+  const toolsUsed = [];
+  const bloquesTexto = [];
+
+  const ejecutarAccion = async (toolName, appsScriptAction, args) => {
+    const res = await llamarAppsScriptAdmin(appsScriptUrl, appsScriptAction, {
+      ...args,
+      sessionToken
+    });
+    if (res && res.ok === false && /sesi[oó]n\s+expirada/i.test(res.error || '')) {
+      const errExp = new Error('Sesión expirada');
+      errExp.sessionExpired = true;
+      throw errExp;
+    }
+    toolsUsed.push({
+      name: toolName,
+      args,
+      ok: Boolean(res?.ok),
+      fuentes: Array.isArray(res?.fuentesConsultadas) ? res.fuentesConsultadas : [],
+      avisos: Array.isArray(res?.avisos) ? res.avisos : []
+    });
+    return res;
+  };
+
+  if (tieneVep) {
+    const estado = /pendient|revis/.test(msgNorm)
+      ? 'Pendiente'
+      : /solicit/.test(msgNorm)
+        ? 'Solicitado'
+        : /enviad/.test(msgNorm)
+          ? 'Enviado'
+          : /pagad/.test(msgNorm)
+            ? 'Pagado'
+            : 'Todos';
+    const dataVep = await ejecutarAccion('consultar_veps', 'admin_consultar_veps', { estado });
+    bloquesTexto.push(formatearRespuestaVeps(dataVep));
+  }
+
+  if (tieneHonorario) {
+    const estado = /vencid/.test(msgNorm)
+      ? 'Vencido'
+      : /pendient|adeud|debe/.test(msgNorm)
+        ? 'Pendiente'
+        : /pagad/.test(msgNorm)
+          ? 'Pagado'
+          : 'Todos';
+    const dataHon = await ejecutarAccion('consultar_honorarios', 'admin_consultar_honorarios', {
+      estado
+    });
+    bloquesTexto.push(formatearRespuestaHonorarios(dataHon));
+  }
+
+  if (tieneVencOAlerta) {
+    const tipo =
+      /vencim/.test(msgNorm) && !/alerta/.test(msgNorm)
+        ? 'vencimientos'
+        : /alerta/.test(msgNorm) && !/vencim/.test(msgNorm)
+          ? 'alertas'
+          : 'todos';
+    const dataVA = await ejecutarAccion(
+      'consultar_vencimientos_y_alertas',
+      'admin_consultar_vencimientos_alertas',
+      { tipo, limite: 20 }
+    );
+    bloquesTexto.push(formatearRespuestaVencimientosAlertas(dataVA));
+  }
+
+  // Solo disparar búsqueda de cliente si tiene CUIT de 11 dígitos o menciona "cliente" sin ser una consulta genérica de VEP/honorarios
+  const queryCliente = extraerQueryCliente(message);
+  if (tieneCuit11 || (tieneCliente && queryCliente && !tieneVep && !tieneHonorario)) {
+    const dataCli = await ejecutarAccion('buscar_cliente', 'admin_buscar_cliente', {
+      query: queryCliente || message
+    });
+    bloquesTexto.push(formatearRespuestaCliente(dataCli));
+  }
+
+  const etiquetaDiscreta = '(Modo directo Nivel 1 por alta demanda en Gemini API)';
+
+  if (bloquesTexto.length === 0) {
+    return {
+      reply:
+        `Gemini API reporta alta demanda momentánea (503/429). Podés consultar directamente sin esperar mencionando **VEP**, **honorarios**, **vencimientos / alertas** o un **CUIT de 11 dígitos / cliente**.\n\n${etiquetaDiscreta}`,
+      toolsUsed
+    };
+  }
+
+  return {
+    reply: `${bloquesTexto.join('\n\n')}\n\n${etiquetaDiscreta}`,
+    toolsUsed
+  };
 }
 
 async function listarModelosDisponiblesGemini(geminiApiKey) {
@@ -311,13 +591,11 @@ async function listarModelosDisponiblesGemini(geminiApiKey) {
     .map((m) => m.id);
 
   const modeloPrincipal = obtenerModeloGemini();
-  const cadenaConfigurada = [modeloPrincipal, ...obtenerModelosRespaldo(modeloPrincipal)];
 
   return {
     ok: true,
     action: 'list_models',
     configuredPrimary: modeloPrincipal,
-    configuredChain: cadenaConfigurada,
     totalModels: models.length,
     generateContentCount: generateContentModels.length,
     generateContentModels,
@@ -417,11 +695,8 @@ export default async function handler(req, res) {
     }
   }
 
-  // 4. Bucle de conversación con cadena de fallback Gemini (espera 800 ms entre 503/429) + Function Calling (Nivel 1)
+  // 4. Bucle de conversación con modelo principal (gemini-3.8-flash) + respaldo determinístico local Nivel 1
   const geminiModel = obtenerModeloGemini();
-  let ultimoModeloUsado = geminiModel;
-  let usoRespaldo = false;
-  let motivoRespaldo = '';
 
   const contents = [
     ...normalizarHistorialParaGemini(history),
@@ -434,13 +709,8 @@ export default async function handler(req, res) {
     let respuestaFinal = '';
 
     for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
-      const llamada = await llamarGeminiConResiliencia(geminiApiKey, geminiModel, contents);
+      const llamada = await llamarGeminiPrincipalConReintento(geminiApiKey, geminiModel, contents);
       const geminiData = llamada.data;
-      ultimoModeloUsado = llamada.modelUsed || geminiModel;
-      if (llamada.usedFallback) {
-        usoRespaldo = true;
-        motivoRespaldo = llamada.fallbackReason || 'alta demanda';
-      }
       const candidate = geminiData?.candidates?.[0];
       const modelContent = candidate?.content;
       const parts = Array.isArray(modelContent?.parts) ? modelContent.parts : [];
@@ -531,21 +801,42 @@ export default async function handler(req, res) {
         'Se consultaron las herramientas del estudio, pero el modelo no generó un resumen textual. Intentá reformular la consulta.';
     }
 
-    const modelStatusMessage = usoRespaldo
-      ? `Respondido por modelo de respaldo (${ultimoModeloUsado}) por ${motivoRespaldo || 'alta demanda'} en ${geminiModel}`
-      : `Respondido por modelo principal (${ultimoModeloUsado})`;
-
     return res.status(200).json({
       ok: true,
       reply: respuestaFinal,
       toolsUsed,
-      model: ultimoModeloUsado,
+      model: geminiModel,
       primaryModel: geminiModel,
-      usedFallback: usoRespaldo,
-      modelStatusMessage,
+      usedFallback: false,
+      modelStatusMessage: `Respondido por modelo principal (${geminiModel})`,
       timestamp: new Date().toISOString()
     });
   } catch (err) {
+    // Respaldo determinístico local ante 503 ("high demand") o 429 para que /admin nunca quede bloqueado
+    if (err?.isOverload || esErrorSobrecarga(err?.httpStatus, err?.message)) {
+      try {
+        const respaldo = await ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, message);
+        return res.status(200).json({
+          ok: true,
+          reply: respaldo.reply,
+          toolsUsed: respaldo.toolsUsed,
+          model: 'modo-directo-nivel-1',
+          primaryModel: geminiModel,
+          usedFallback: true,
+          modelStatusMessage: '(Modo directo Nivel 1 por alta demanda en Gemini API)',
+          timestamp: new Date().toISOString()
+        });
+      } catch (errRespaldo) {
+        if (errRespaldo?.sessionExpired || /sesi[oó]n\s+expirada/i.test(errRespaldo?.message || '')) {
+          return res.status(401).json({ ok: false, error: 'Sesión expirada' });
+        }
+        return res.status(502).json({
+          ok: false,
+          error: `Gemini API con alta demanda y fallo en modo directo Nivel 1: ${errRespaldo?.message}`
+        });
+      }
+    }
+
     return res.status(500).json({
       ok: false,
       error: err?.message || 'Error inesperado ejecutando GR Cerebro Central de IA.'
