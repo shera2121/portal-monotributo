@@ -62,11 +62,11 @@ const SYSTEM_INSTRUCTION = `Sos el asistente técnico de inteligencia y control 
 REGLAS OBLIGATORIAS E INQUEBRANTABLES:
 1. Basate EXCLUSIVAMENTE en los datos reales devueltos por las herramientas ejecutadas en esta conversación.
 2. NUNCA inventes datos fiscales, CUITs, montos, categorías, vencimientos, alertas ni estados de pago. Si no tenés el dato verificado por una herramienta, decilo explícitamente.
-3. Citá SIEMPRE la planilla y hoja de origen de cada dato (por ejemplo: "DEV_Registro de Comprobantes → Directorio Clientes", "Solicitudes App PWA", "Control Honorarios", "Control Pagos VEP", "Control de Vencimientos", "Control de Alertas ARCA" o "Excel Maestro").
+3. Citá SIEMPRE la planilla y hoja de origen de cada dato (por ejemplo: "DEV_Registro de Comprobantes → Directorio Clientes", "Solicitudes App PWA", "Control Honorarios", "Control Pagos VEP", "Base_Conocimiento_IA", "Control de Vencimientos", "Control de Alertas ARCA" o "Excel Maestro").
 4. Si una herramienta devuelve avisos indicando que falta configurar el ID de una planilla (por ejemplo SHEET_ID_VENCIMIENTOS, SHEET_ID_ALERTAS_ARCA o SHEET_ID_MAESTRO), informalo claramente al contador sin asumir ni completar datos faltantes.
-5. Cuando el contador consulte sobre clientes, VEPs, honorarios, vencimientos o alertas ARCA, invocá primero las herramientas correspondientes antes de responder.
+5. Cuando el contador consulte sobre clientes, VEPs, honorarios, vencimientos, alertas ARCA o criterios/normativa vigente del estudio, invocá primero las herramientas correspondientes antes de responder.
 6. Respondé en español rioplatense profesional, claro, directo y estructurado (viñetas cortas, totales claros e importes en pesos argentinos cuando los devuelva la herramienta).
-7. Estás en Etapa 3 — Nivel 1 (Solo Lectura): si te piden modificar una planilla, emitir una factura, enviar un VEP o mandar un mensaje a un cliente, explicá que todavía no tenés permisos de escritura/acción habilitados y ofrecé el diagnóstico de solo lectura.`;
+7. Estás en Nivel 1 (Solo Lectura): si te piden modificar una planilla, emitir una factura, enviar un VEP o mandar un mensaje a un cliente, explicá que todavía no tenés permisos de escritura/acción habilitados y ofrecé el diagnóstico de solo lectura.`;
 
 const GEMINI_TOOLS = [
   {
@@ -143,6 +143,25 @@ const GEMINI_TOOLS = [
             }
           }
         }
+      },
+      {
+        name: 'consultar_normativa',
+        description:
+          'Consulta la hoja "Base_Conocimiento_IA" con criterios técnicos, reglas operativas y normativa con vigencia del estudio (Monotributo Art. 20, validación de VEP, DGR Salta / Convenio Multilateral, etc.). Por defecto devuelve solo reglas con Estado = VIGENTE.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            tema: {
+              type: 'STRING',
+              description:
+                'Opcional: palabra clave o tema a filtrar (ej: "Monotributo", "Art. 20", "VEP", "Convenio", "DGR"). Dejar vacío para traer todas las reglas vigentes.'
+            },
+            incluirHistoricas: {
+              type: 'BOOLEAN',
+              description: 'Opcional: true para incluir también reglas históricas o derogadas.'
+            }
+          }
+        }
       }
     ]
   }
@@ -152,7 +171,8 @@ const MAPA_ACCIONES_APPS_SCRIPT = {
   buscar_cliente: 'admin_buscar_cliente',
   consultar_veps: 'admin_consultar_veps',
   consultar_honorarios: 'admin_consultar_honorarios',
-  consultar_vencimientos_y_alertas: 'admin_consultar_vencimientos_alertas'
+  consultar_vencimientos_y_alertas: 'admin_consultar_vencimientos_alertas',
+  consultar_normativa: 'admin_consultar_normativa'
 };
 
 async function llamarAppsScriptAdmin(appsScriptUrl, action, payload) {
@@ -458,6 +478,33 @@ function formatearRespuestaCliente(data) {
   return lineas.join('\n');
 }
 
+function formatearRespuestaNormativa(data) {
+  const lineas = [];
+  lineas.push(
+    `**Base de Conocimiento y Normativa (${data?.incluirHistoricas ? 'Vigentes e históricas' : 'Solo VIGENTES'})**`
+  );
+  lineas.push('Fuente: **DEV_Registro de Comprobantes → Base_Conocimiento_IA**');
+
+  const reglas = Array.isArray(data?.reglas) ? data.reglas : [];
+  if (reglas.length > 0) {
+    lineas.push('');
+    reglas.forEach((r) => {
+      lineas.push(
+        `- **${r.id} — ${r.tema}** [${r.categoria || 'General'} | Estado: **${r.estado}**]: ${r.contenidoRegla}${r.fuenteNormativa ? ` _(Fuente: ${r.fuenteNormativa} • Vigencia: ${r.vigenciaDesde || 'S/D'} → ${r.vigenciaHasta || 'Vigente'})_` : ''}`
+      );
+    });
+  } else {
+    lineas.push('- No se encontraron reglas registradas para ese criterio en Base_Conocimiento_IA.');
+  }
+
+  const avisos = Array.isArray(data?.avisos) ? data.avisos : [];
+  if (avisos.length > 0) {
+    lineas.push('');
+    avisos.forEach((a) => lineas.push(`- Aviso: ${a}`));
+  }
+  return lineas.join('\n');
+}
+
 /**
  * Respaldo determinístico local de Nivel 1 (sin depender de Gemini API)
  * para mantener operativo el panel /admin cuando Gemini devuelve 503/429.
@@ -467,6 +514,7 @@ async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, messa
   const tieneVep = /\bveps?\b/.test(msgNorm);
   const tieneHonorario = /honorario/.test(msgNorm);
   const tieneVencOAlerta = /vencim|alerta/.test(msgNorm);
+  const tieneNormativa = /normativ|regla|criterio|vigencia|art\.?\s*20|base\s+de\s+conocimiento/.test(msgNorm);
   const tieneCuit11 = /\b\d{2}-?\d{8}-?\d\b/.test(String(message || ''));
   const tieneCliente = /\bcliente\b|\bcontribuyente\b/.test(msgNorm) || tieneCuit11;
 
@@ -536,9 +584,18 @@ async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, messa
     bloquesTexto.push(formatearRespuestaVencimientosAlertas(dataVA));
   }
 
+  if (tieneNormativa) {
+    const incluirHistoricas = /historic|derogad|todas\s+las\s+reglas/.test(msgNorm);
+    const dataNorm = await ejecutarAccion('consultar_normativa', 'admin_consultar_normativa', {
+      tema: '',
+      incluirHistoricas
+    });
+    bloquesTexto.push(formatearRespuestaNormativa(dataNorm));
+  }
+
   // Solo disparar búsqueda de cliente si tiene CUIT de 11 dígitos o menciona "cliente" sin ser una consulta genérica de VEP/honorarios
   const queryCliente = extraerQueryCliente(message);
-  if (tieneCuit11 || (tieneCliente && queryCliente && !tieneVep && !tieneHonorario)) {
+  if (tieneCuit11 || (tieneCliente && queryCliente && !tieneVep && !tieneHonorario && !tieneNormativa)) {
     const dataCli = await ejecutarAccion('buscar_cliente', 'admin_buscar_cliente', {
       query: queryCliente || message
     });
@@ -550,7 +607,7 @@ async function ejecutarRespaldoDeterministico(appsScriptUrl, sessionToken, messa
   if (bloquesTexto.length === 0) {
     return {
       reply:
-        `Gemini API reporta alta demanda momentánea (503/429). Podés consultar directamente sin esperar mencionando **VEP**, **honorarios**, **vencimientos / alertas** o un **CUIT de 11 dígitos / cliente**.\n\n${etiquetaDiscreta}`,
+        `Gemini API reporta alta demanda momentánea (503/429). Podés consultar directamente sin esperar mencionando **VEP**, **honorarios**, **vencimientos / alertas**, **normativa / criterios** o un **CUIT de 11 dígitos / cliente**.\n\n${etiquetaDiscreta}`,
       toolsUsed
     };
   }

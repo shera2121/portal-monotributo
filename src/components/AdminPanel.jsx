@@ -12,7 +12,9 @@ import {
   Database,
   Eye,
   EyeOff,
+  FileSearch,
   FileSpreadsheet,
+  FileText,
   Globe,
   KeyRound,
   Loader2,
@@ -25,15 +27,19 @@ import {
   Smartphone,
   Sparkles,
   Trash2,
+  UploadCloud,
   Wrench
 } from 'lucide-react';
 import {
+  adminAnalizarDocumento,
   adminCerebroChat,
   adminHealthcheck,
   adminLogin,
   adminLogout,
   adminVerifySession
 } from '../services/api.js';
+import { formatARS, formatCUIT } from '../utils/fiscalCalculations.js';
+import { formatBytes, prepararArchivoComprobante } from '../utils/imageCompressor.js';
 import {
   eliminarStorageSeguro,
   guardarJsonSeguro,
@@ -63,14 +69,16 @@ const PLANILLAS_FALLBACK = [
 const CONSULTAS_RAPIDAS_CEREBRO = [
   '¿Qué clientes tienen VEP pendiente de revisión?',
   'Mostrame el estado de honorarios pendientes',
-  'Revisá alertas de ARCA y próximos vencimientos'
+  'Revisá alertas de ARCA y próximos vencimientos',
+  'Revisá criterios y normativa vigente del estudio'
 ];
 
 const ETIQUETAS_HERRAMIENTAS = {
   buscar_cliente: 'Buscar cliente',
   consultar_veps: 'Consultar VEPs',
   consultar_honorarios: 'Consultar honorarios',
-  consultar_vencimientos_y_alertas: 'Vencimientos y Alertas ARCA'
+  consultar_vencimientos_y_alertas: 'Vencimientos y Alertas ARCA',
+  consultar_normativa: 'Base de Conocimiento / Normativa'
 };
 
 function renderTextoFormateadoIA(texto) {
@@ -157,12 +165,20 @@ export default function AdminPanel() {
   const [errorDiagnostico, setErrorDiagnostico] = useState('');
   const [planillasExpandidas, setPlanillasExpandidas] = useState({});
 
-  // Estado del Chat Central — GR Cerebro de IA (Etapa 3 — Nivel 1 Function Calling)
+  // Estado del Chat Central — GR Cerebro de IA (Etapa 3/4 — Nivel 1 Function Calling)
   const [mensajesChat, setMensajesChat] = useState([]);
   const [inputChat, setInputChat] = useState('');
   const [enviandoChat, setEnviandoChat] = useState(false);
   const [errorChat, setErrorChat] = useState('');
   const chatEndRef = useRef(null);
+
+  // Estado del Validador Documental OCR/PDF — Etapa 4 (Nivel 1 Solo Lectura)
+  const inputDocAdminRef = useRef(null);
+  const [archivoDoc, setArchivoDoc] = useState(null);
+  const [preparandoDoc, setPreparandoDoc] = useState(false);
+  const [analizandoDoc, setAnalizandoDoc] = useState(false);
+  const [resultadoDoc, setResultadoDoc] = useState(null);
+  const [errorDoc, setErrorDoc] = useState('');
 
   useEffect(() => {
     if (mensajesChat.length > 0) {
@@ -175,10 +191,76 @@ export default function AdminPanel() {
     setSesionAdmin(null);
     setHealthData(null);
     setMensajesChat([]);
+    setArchivoDoc(null);
+    setResultadoDoc(null);
     setErrorDiagnostico('');
     setErrorChat('');
+    setErrorDoc('');
     setError(mensaje || 'Tu sesión de administrador expiró. Ingresá nuevamente tu Clave Maestra.');
   }, []);
+
+  const handleSeleccionarDocAdmin = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErrorDoc('');
+    setResultadoDoc(null);
+
+    const mimeRaw = String(file.type || '').toLowerCase();
+    const esPdf = mimeRaw === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+    const esImagen = /^image\/(jpeg|jpg|png|webp)$/i.test(mimeRaw) || /\.(jpe?g|png|webp)$/i.test(file.name || '');
+
+    if (!esPdf && !esImagen) {
+      setErrorDoc('Formato no admitido. Seleccioná un PDF, JPG, PNG o WEBP.');
+      return;
+    }
+    if (esPdf && file.size > 3.2 * 1024 * 1024) {
+      setErrorDoc('El PDF supera los 3,2 MB admitidos por el analizador. Comprimilo o subí una captura.');
+      return;
+    }
+
+    setPreparandoDoc(true);
+    try {
+      const proc = await prepararArchivoComprobante(file);
+      setArchivoDoc({
+        nombre: proc.nombre || file.name,
+        mimeType: esPdf ? 'application/pdf' : proc.tipo || file.type || 'image/jpeg',
+        base64: proc.base64,
+        previewUrl: proc.previewUrl || '',
+        esPdf,
+        tamanoOriginal: proc.tamanoOriginal || file.size,
+        tamanoFinal: proc.tamanoFinal || file.size,
+        comprimido: Boolean(proc.comprimido)
+      });
+    } catch (err) {
+      setErrorDoc(err?.message || 'No se pudo leer el archivo seleccionado.');
+    } finally {
+      setPreparandoDoc(false);
+    }
+  };
+
+  const handleAnalizarYCruzarDocumento = async () => {
+    if (!archivoDoc?.base64 || !sesionAdmin?.sessionToken || analizandoDoc) return;
+    setErrorDoc('');
+    setResultadoDoc(null);
+    setAnalizandoDoc(true);
+    try {
+      const res = await adminAnalizarDocumento({
+        fileBase64: archivoDoc.base64,
+        mimeType: archivoDoc.mimeType,
+        fileName: archivoDoc.nombre,
+        sessionToken: sesionAdmin.sessionToken
+      });
+      setResultadoDoc(res);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorDoc(err?.message || 'No se pudo analizar y cruzar el documento.');
+    } finally {
+      setAnalizandoDoc(false);
+    }
+  };
 
   const enviarConsultaCerebro = useCallback(
     async (textoManual) => {
@@ -507,11 +589,15 @@ export default function AdminPanel() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
       <LoadingOverlay
-        visible={cerrandoSesion || (cargandoDiagnostico && !healthData)}
+        visible={cerrandoSesion || analizandoDoc || preparandoDoc || (cargandoDiagnostico && !healthData)}
         message={
           cerrandoSesion
             ? 'Cerrando sesión Admin...'
-            : 'Ejecutando diagnóstico solo lectura...'
+            : preparandoDoc
+              ? 'Optimizando archivo para análisis...'
+              : analizandoDoc
+                ? 'Analizando documento y cruzando con planillas...'
+                : 'Ejecutando diagnóstico solo lectura...'
         }
       />
 
@@ -577,10 +663,10 @@ export default function AdminPanel() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                Etapa 3 — Motor Gemini 3.8 Flash (Function Calling) + Supervisión Técnica
+                Etapa 4 — Motor Gemini 3.8 Flash + OCR/PDF + Base de Conocimiento (Nivel 1)
               </span>
               <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
-                Chat Central de consulta sobre planillas reales y diagnóstico del estudio
+                Chat Central, Validador Documental y supervisión en tiempo real
               </h2>
               <p className="text-xs text-slate-700 mt-0.5">
                 {healthData?.checkedAtAR
@@ -621,7 +707,7 @@ export default function AdminPanel() {
                   Chat Central — GR Cerebro de IA
                 </h3>
                 <p className="text-[11px] text-petroleo-100">
-                  Gemini 3.8 Flash • 4 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos y Alertas)
+                  Gemini 3.8 Flash • 5 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos/Alertas y Normativa)
                 </p>
               </div>
             </div>
@@ -816,6 +902,278 @@ export default function AdminPanel() {
                 <span className="hidden sm:inline">Consultar</span>
               </button>
             </form>
+          </div>
+        </section>
+
+        {/* 0B. VALIDADOR DOCUMENTAL (PDF / IMAGEN) — NIVEL 1 (ETAPA 4) */}
+        <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 overflow-hidden">
+          <div className="bg-[#F8FAFC] border-b border-slate-200/80 px-4 sm:px-5 py-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-[#0F4C5C] text-[#FBF8CC] flex items-center justify-center shrink-0">
+                <FileSearch className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-tight">
+                  Validador Documental (PDF / Imagen) — Nivel 1
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Extraé datos con OCR/IA y cruzá automáticamente contra Directorio, Solicitudes y Honorarios (sin editar celdas)
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-extrabold uppercase tracking-wider bg-petroleo-50 text-[#0F4C5C] border border-petroleo/20 px-2.5 py-1 rounded-full">
+              Solo Lectura
+            </span>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-4">
+            <input
+              ref={inputDocAdminRef}
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp"
+              onChange={handleSeleccionarDocAdmin}
+              className="hidden"
+            />
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                type="button"
+                disabled={preparandoDoc || analizandoDoc}
+                onClick={() => inputDocAdminRef.current?.click()}
+                className="flex-1 py-3.5 px-4 rounded-2xl border-2 border-dashed border-[#0F4C5C]/35 bg-[#F8FAFC] hover:bg-petroleo-50/50 disabled:opacity-50 text-[#0F4C5C] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition"
+              >
+                <UploadCloud className="w-5 h-5 text-[#E36414] shrink-0" />
+                <span>
+                  {archivoDoc ? `Cambiar archivo (${archivoDoc.nombre})` : 'Seleccionar PDF, JPG o PNG'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!archivoDoc || preparandoDoc || analizandoDoc}
+                onClick={handleAnalizarYCruzarDocumento}
+                className="py-3.5 px-5 rounded-2xl bg-[#E36414] hover:bg-ladrillo-dark disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm shadow-sm flex items-center justify-center gap-2 transition active:scale-95 shrink-0"
+              >
+                <Sparkles className="w-4 h-4 shrink-0" />
+                <span>
+                  {analizandoDoc ? 'Analizando y cruzando...' : 'Analizar y Cruzar con Planillas'}
+                </span>
+              </button>
+            </div>
+
+            {/* Vista previa compacta del archivo seleccionado */}
+            {archivoDoc && (
+              <div className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {archivoDoc.esPdf || !archivoDoc.previewUrl ? (
+                    <div className="w-11 h-11 rounded-xl bg-[#0F4C5C] text-[#FBF8CC] flex items-center justify-center shrink-0">
+                      <FileText className="w-5 h-5" />
+                    </div>
+                  ) : (
+                    <img
+                      src={archivoDoc.previewUrl}
+                      alt="Vista previa del documento"
+                      className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-800 truncate">{archivoDoc.nombre}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {archivoDoc.esPdf ? 'Documento PDF' : 'Imagen'} •{' '}
+                      {archivoDoc.comprimido
+                        ? `${formatBytes(archivoDoc.tamanoOriginal)} → ${formatBytes(archivoDoc.tamanoFinal)}`
+                        : formatBytes(archivoDoc.tamanoFinal)}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setArchivoDoc(null);
+                    setResultadoDoc(null);
+                    setErrorDoc('');
+                    if (inputDocAdminRef.current) inputDocAdminRef.current.value = '';
+                  }}
+                  aria-label="Quitar archivo"
+                  className="p-2 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {errorDoc && (
+              <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorDoc}</span>
+              </div>
+            )}
+
+            {/* Resultado estructurado: Datos extraídos + Cruce contra Google Sheets */}
+            {resultadoDoc?.datosExtraidos && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-1">
+                {/* Columna A: Datos extraídos por OCR/IA */}
+                <div className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-[#0F4C5C]">
+                      1. Datos extraídos del documento
+                    </h4>
+                    <span className="text-[10px] font-mono font-bold text-slate-500">
+                      {resultadoDoc.model || 'gemini-3.8-flash'}
+                    </span>
+                  </div>
+
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-xs">
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Tipo</dt>
+                      <dd className="font-black text-slate-900 mt-0.5">
+                        {resultadoDoc.datosExtraidos.tipo_documento || 'S/D'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Importe Total</dt>
+                      <dd className="font-black text-[#0F4C5C] mt-0.5">
+                        {resultadoDoc.datosExtraidos.importe_total > 0
+                          ? formatARS(resultadoDoc.datosExtraidos.importe_total)
+                          : 'No detectado'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">CUIT</dt>
+                      <dd className="font-mono font-bold text-slate-800 mt-0.5">
+                        {resultadoDoc.datosExtraidos.cuit
+                          ? formatCUIT(resultadoDoc.datosExtraidos.cuit)
+                          : 'No detectado'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">Período / Fecha</dt>
+                      <dd className="font-bold text-slate-800 mt-0.5">
+                        {[resultadoDoc.datosExtraidos.periodo, resultadoDoc.datosExtraidos.fecha]
+                          .filter(Boolean)
+                          .join(' • ') || 'S/D'}
+                      </dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-[10px] font-bold uppercase text-slate-400">
+                        Nombre / Razón Social
+                      </dt>
+                      <dd className="font-bold text-slate-800 mt-0.5">
+                        {resultadoDoc.datosExtraidos.nombre_razon_social || 'No detectado'}
+                      </dd>
+                    </div>
+                    {resultadoDoc.datosExtraidos.numero_comprobante_cae && (
+                      <div className="col-span-2">
+                        <dt className="text-[10px] font-bold uppercase text-slate-400">
+                          N° Comprobante / VEP / CAE
+                        </dt>
+                        <dd className="font-mono font-bold text-slate-800 mt-0.5">
+                          {resultadoDoc.datosExtraidos.numero_comprobante_cae}
+                        </dd>
+                      </div>
+                    )}
+                    {resultadoDoc.datosExtraidos.observaciones && (
+                      <div className="col-span-2">
+                        <dt className="text-[10px] font-bold uppercase text-slate-400">Observaciones IA</dt>
+                        <dd className="text-slate-600 mt-0.5 leading-snug">
+                          {resultadoDoc.datosExtraidos.observaciones}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+
+                {/* Columna B: Resultado del cruce contra las planillas en Google Sheets */}
+                <div className="rounded-2xl bg-white border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 flex-wrap">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-[#0F4C5C]">
+                      2. Cruce contra Planillas del Estudio
+                    </h4>
+                    {resultadoDoc.crucePlanillas?.estadoCruce && (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${
+                          resultadoDoc.crucePlanillas.estadoCruce === 'COINCIDENCIA_OK'
+                            ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
+                            : resultadoDoc.crucePlanillas.estadoCruce === 'CON_DISCREPANCIAS'
+                              ? 'bg-amber-100 text-amber-900 border-amber-200'
+                              : 'bg-red-100 text-red-900 border-red-200'
+                        }`}
+                      >
+                        {resultadoDoc.crucePlanillas.estadoCruce === 'COINCIDENCIA_OK'
+                          ? 'Coincidencia OK'
+                          : resultadoDoc.crucePlanillas.estadoCruce === 'CON_DISCREPANCIAS'
+                            ? 'Con discrepancias'
+                            : 'Cliente no encontrado'}
+                      </span>
+                    )}
+                  </div>
+
+                  {resultadoDoc.avisoCruce && (
+                    <p className="text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                      {resultadoDoc.avisoCruce}
+                    </p>
+                  )}
+
+                  {resultadoDoc.crucePlanillas && (
+                    <div className="space-y-3 text-xs">
+                      {resultadoDoc.crucePlanillas.resumenCruce && (
+                        <p className="font-bold text-slate-800 leading-snug">
+                          {resultadoDoc.crucePlanillas.resumenCruce}
+                        </p>
+                      )}
+
+                      {resultadoDoc.crucePlanillas.clienteEncontrado && (
+                        <div className="rounded-xl bg-[#F8FAFC] border border-slate-200 p-3 space-y-1 text-[11px]">
+                          <p className="font-black text-[#0F4C5C]">
+                            {resultadoDoc.crucePlanillas.clienteEncontrado.cliente} (Cat.{' '}
+                            {resultadoDoc.crucePlanillas.clienteEncontrado.categoria})
+                          </p>
+                          <p className="text-slate-600">
+                            Cuota VEP:{' '}
+                            <strong>
+                              {formatARS(resultadoDoc.crucePlanillas.clienteEncontrado.cuotaMonotributo)}
+                            </strong>{' '}
+                            ({resultadoDoc.crucePlanillas.clienteEncontrado.estadoMesActualVep}) •
+                            Honorarios:{' '}
+                            <strong>
+                              {formatARS(resultadoDoc.crucePlanillas.clienteEncontrado.importeHonorarios)}
+                            </strong>{' '}
+                            ({resultadoDoc.crucePlanillas.clienteEncontrado.estadoHonorarios})
+                          </p>
+                        </div>
+                      )}
+
+                      {Array.isArray(resultadoDoc.crucePlanillas.hallazgos) &&
+                        resultadoDoc.crucePlanillas.hallazgos.length > 0 && (
+                          <div className="space-y-2">
+                            {resultadoDoc.crucePlanillas.hallazgos.map((h, hIdx) => {
+                              const cls =
+                                h.nivel === 'ok'
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                                  : h.nivel === 'alerta'
+                                    ? 'bg-amber-50 border-amber-200 text-amber-950'
+                                    : 'bg-red-50 border-red-200 text-red-950';
+                              return (
+                                <div key={hIdx} className={`rounded-xl border p-2.5 space-y-0.5 ${cls}`}>
+                                  <p className="font-black text-[11px]">{h.titulo}</p>
+                                  <p className="text-[11px] leading-snug opacity-90">{h.detalle}</p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                      {Array.isArray(resultadoDoc.crucePlanillas.fuentesConsultadas) && (
+                        <p className="text-[10px] text-slate-400 pt-1">
+                          Fuentes verificadas (solo lectura):{' '}
+                          {resultadoDoc.crucePlanillas.fuentesConsultadas.join(' • ')}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 

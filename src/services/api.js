@@ -964,6 +964,37 @@ export async function adminCerebroChat({ message, sessionToken, history = [] }) 
   return data;
 }
 
+export async function adminAnalizarDocumento({ fileBase64, mimeType, fileName, sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+
+  const res = await fetch('/api/analizar-documento', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileBase64,
+      mimeType,
+      fileName,
+      sessionToken: token
+    })
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 || /sesi[oó]n\s+expirada/i.test(data?.error || '')) {
+    const err = new Error(data?.error || 'Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(data?.error || `Error en /api/analizar-documento (HTTP ${res.status})`);
+  }
+  return data;
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */
