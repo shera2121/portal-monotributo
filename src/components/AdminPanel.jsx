@@ -3,11 +3,14 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  BookOpen,
   Bot,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock,
+  Copy,
   Cpu,
   Database,
   Eye,
@@ -16,11 +19,13 @@ import {
   FileSpreadsheet,
   FileText,
   Globe,
+  Inbox,
   KeyRound,
   Loader2,
   Lock,
   LogOut,
   MessageSquare,
+  PlusCircle,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -28,17 +33,19 @@ import {
   Sparkles,
   Trash2,
   UploadCloud,
-  Wrench
+  Wrench,
+  X
 } from 'lucide-react';
 import {
   adminAnalizarDocumento,
   adminCerebroChat,
+  adminEjecutarAccionNivel2,
   adminHealthcheck,
   adminLogin,
   adminLogout,
   adminVerifySession
 } from '../services/api.js';
-import { formatARS, formatCUIT } from '../utils/fiscalCalculations.js';
+import { cleanCUIT, formatARS, formatCUIT } from '../utils/fiscalCalculations.js';
 import { formatBytes, prepararArchivoComprobante } from '../utils/imageCompressor.js';
 import {
   eliminarStorageSeguro,
@@ -179,6 +186,202 @@ export default function AdminPanel() {
   const [analizandoDoc, setAnalizandoDoc] = useState(false);
   const [resultadoDoc, setResultadoDoc] = useState(null);
   const [errorDoc, setErrorDoc] = useState('');
+
+  // Estado de la Bandeja de Acciones Sugeridas — Etapa 5 (Nivel 2 con aprobación humana obligatoria)
+  const bandejaNivel2Ref = useRef(null);
+  const [accionesNivel2, setAccionesNivel2] = useState([]);
+  const [ejecutandoAccionId, setEjecutandoAccionId] = useState('');
+  const [avisoNivel2, setAvisoNivel2] = useState('');
+  const [errorNivel2, setErrorNivel2] = useState('');
+  const [tabGeneradorN2, setTabGeneradorN2] = useState('estado_pago'); // 'estado_pago' | 'normativa' | 'borrador_msg'
+
+  // Formulario rápido 1: Proponer cambio de estado VEP u Honorario
+  const [propTipoPago, setPropTipoPago] = useState('actualizar_estado_vep');
+  const [propCuit, setPropCuit] = useState('');
+  const [propClienteNombre, setPropClienteNombre] = useState('');
+  const [propPeriodo, setPropPeriodo] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [propNuevoEstado, setPropNuevoEstado] = useState('PAGADO');
+  const [propObservacion, setPropObservacion] = useState('');
+
+  // Formulario rápido 2: Proponer nueva regla normativa
+  const [reglaTema, setReglaTema] = useState('');
+  const [reglaCategoria, setReglaCategoria] = useState('Monotributo');
+  const [reglaContenido, setReglaContenido] = useState('');
+  const [reglaVigenciaDesde, setReglaVigenciaDesde] = useState(() => {
+    const d = new Date();
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  });
+  const [reglaFuente, setReglaFuente] = useState('');
+
+  // Formulario rápido 3: Borrador de mensaje WhatsApp/Telegram (copia manual controlada)
+  const [msgPlantilla, setMsgPlantilla] = useState('vep_pendiente');
+  const [msgCliente, setMsgCliente] = useState('');
+  const [msgPeriodo, setMsgPeriodo] = useState(() => {
+    const d = new Date();
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  });
+  const [msgImporte, setMsgImporte] = useState('');
+  const [msgCopiado, setMsgCopiado] = useState(false);
+
+  const borradorMensajeTexto = (() => {
+    const saludo = msgCliente.trim() ? `Hola ${msgCliente.trim()},` : 'Hola,';
+    const perTxt = msgPeriodo.trim() ? ` correspondiente al período ${msgPeriodo.trim()}` : '';
+    const impTxt = msgImporte.trim() ? ` por ${msgImporte.trim()}` : '';
+
+    if (msgPlantilla === 'honorarios_pendientes') {
+      return `${saludo} te escribimos desde GR Servicios Contables para recordarte que registrás honorarios profesionales pendientes${perTxt}${impTxt}. Cuando realices la transferencia, por favor envianos el comprobante por la app o por este medio para actualizar tu cuenta. ¡Muchas gracias!`;
+    }
+    if (msgPlantilla === 'pago_confirmado') {
+      return `${saludo} te confirmamos desde GR Servicios Contables que verificamos y registramos tu pago${perTxt}${impTxt} como PAGADO en tu cuenta. ¡Gracias por mantener tu situación al día!`;
+    }
+    return `${saludo} te escribimos desde GR Servicios Contables para recordarte que tenés tu VEP pendiente${perTxt}${impTxt}. Podés descargarlo desde tu Portal de Autogestión (Historial → Documentos) o avisarnos si necesitás que te lo reenviemos. Una vez abonado, subí el comprobante para registrarlo como pagado. ¡Saludos!`;
+  })();
+
+  const agregarAccionABandejaNivel2 = (accionObj) => {
+    setErrorNivel2('');
+    setAvisoNivel2('');
+    const nueva = {
+      id: `N2-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      creadoEn: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+      ...accionObj
+    };
+    setAccionesNivel2((prev) => [nueva, ...prev]);
+    setAvisoNivel2('Propuesta agregada a la Bandeja Nivel 2. Revisala y tocá "Aprobar y Ejecutar" para aplicar el cambio.');
+    setTimeout(() => {
+      bandejaNivel2Ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+  };
+
+  const handleEnviarDocABandejaNivel2 = () => {
+    const cli = resultadoDoc?.crucePlanillas?.clienteEncontrado;
+    const ext = resultadoDoc?.datosExtraidos;
+    if (!cli || !ext) return;
+
+    const tipoNorm = String(ext.tipo_documento || '').toLowerCase();
+    const esHonorario = /honorario|estudio|recibo/.test(tipoNorm) && !/vep|monotrib/.test(tipoNorm);
+    const tipoAccion = esHonorario ? 'actualizar_estado_honorario' : 'actualizar_estado_vep';
+    const estadoAnterior = esHonorario ? cli.estadoHonorarios : cli.estadoMesActualVep;
+    const cuitCli = cleanCUIT(cli.cuit || ext.cuit);
+
+    agregarAccionABandejaNivel2({
+      tipoAccion,
+      tituloAccion: esHonorario ? 'Actualizar Estado de Honorarios' : 'Actualizar Estado VEP',
+      clienteNombre: cli.cliente,
+      cuit: cuitCli,
+      hojaDestino: esHonorario
+        ? 'Directorio Clientes + Control Honorarios'
+        : 'Directorio Clientes + Solicitudes App PWA',
+      cambioPropuesto: `${estadoAnterior || 'A VERIFICAR'} → PAGADO${ext.periodo ? ` (Período ${ext.periodo})` : ''}`,
+      origen: `Validador Documental (${resultadoDoc.fileName || 'comprobante'})`,
+      datosPayload: {
+        cuit: cuitCli,
+        periodo: ext.periodo || '',
+        nuevoEstado: 'PAGADO',
+        observacion: `Verificado desde ${resultadoDoc.fileName || 'documento'} (${ext.tipo_documento || 'Comprobante'}${ext.importe_total > 0 ? ` — ${formatARS(ext.importe_total)}` : ''})`
+      }
+    });
+  };
+
+  const handleCrearPropuestaPago = (e) => {
+    e.preventDefault();
+    setErrorNivel2('');
+    const cuitLimpio = cleanCUIT(propCuit);
+    if (cuitLimpio.length !== 11) {
+      setErrorNivel2('Ingresá un CUIT válido de exactamente 11 dígitos para crear la propuesta.');
+      return;
+    }
+    const esVep = propTipoPago === 'actualizar_estado_vep';
+    agregarAccionABandejaNivel2({
+      tipoAccion: propTipoPago,
+      tituloAccion: esVep ? 'Actualizar Estado VEP' : 'Actualizar Estado de Honorarios',
+      clienteNombre: propClienteNombre.trim() || `CUIT ${formatCUIT(cuitLimpio)}`,
+      cuit: cuitLimpio,
+      hojaDestino: esVep
+        ? 'Directorio Clientes + Solicitudes App PWA'
+        : 'Directorio Clientes + Control Honorarios',
+      cambioPropuesto: `Estado → ${propNuevoEstado}${propPeriodo ? ` (Período ${propPeriodo})` : ''}`,
+      origen: 'Generador rápido Nivel 2',
+      datosPayload: {
+        cuit: cuitLimpio,
+        periodo: propPeriodo.trim(),
+        nuevoEstado: propNuevoEstado,
+        observacion: propObservacion.trim()
+      }
+    });
+    setPropObservacion('');
+  };
+
+  const handleCrearPropuestaRegla = (e) => {
+    e.preventDefault();
+    setErrorNivel2('');
+    if (!reglaTema.trim() || !reglaContenido.trim()) {
+      setErrorNivel2('Completá el Tema y el Contenido de la regla antes de enviarla a la Bandeja.');
+      return;
+    }
+    agregarAccionABandejaNivel2({
+      tipoAccion: 'registrar_regla_normativa',
+      tituloAccion: 'Registrar Nueva Regla Normativa',
+      clienteNombre: reglaTema.trim(),
+      cuit: '',
+      hojaDestino: 'Base_Conocimiento_IA',
+      cambioPropuesto: `Nueva fila VIGENTE [${reglaCategoria}] desde ${reglaVigenciaDesde || 'hoy'}`,
+      origen: 'Generador rápido Nivel 2',
+      datosPayload: {
+        tema: reglaTema.trim(),
+        categoria: reglaCategoria,
+        contenidoRegla: reglaContenido.trim(),
+        vigenciaDesde: reglaVigenciaDesde.trim(),
+        fuenteNormativa: reglaFuente.trim() || 'Criterio técnico GR Servicios Contables'
+      }
+    });
+    setReglaTema('');
+    setReglaContenido('');
+    setReglaFuente('');
+  };
+
+  const handleAprobarYEjecutarNivel2 = async (accion) => {
+    if (!sesionAdmin?.sessionToken || ejecutandoAccionId) return;
+    setErrorNivel2('');
+    setAvisoNivel2('');
+    setEjecutandoAccionId(accion.id);
+    try {
+      const res = await adminEjecutarAccionNivel2({
+        sessionToken: sesionAdmin.sessionToken,
+        tipoAccion: accion.tipoAccion,
+        datos: accion.datosPayload
+      });
+      setAccionesNivel2((prev) => prev.filter((item) => item.id !== accion.id));
+      setAvisoNivel2(res.resumen || 'Acción Nivel 2 ejecutada y auditada en Log_Cerebro_IA.');
+      // Refrescar automáticamente el diagnóstico y el historial de Log_Cerebro_IA
+      await ejecutarDiagnostico(sesionAdmin.sessionToken);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorNivel2(err?.message || 'No se pudo ejecutar la acción aprobada.');
+    } finally {
+      setEjecutandoAccionId('');
+    }
+  };
+
+  const handleDescartarAccionNivel2 = (id) => {
+    setAccionesNivel2((prev) => prev.filter((item) => item.id !== id));
+    setAvisoNivel2('Propuesta descartada sin realizar ningún cambio en Google Sheets.');
+  };
+
+  const handleCopiarBorradorMensaje = async () => {
+    try {
+      await navigator.clipboard.writeText(borradorMensajeTexto);
+      setMsgCopiado(true);
+      setTimeout(() => setMsgCopiado(false), 2500);
+    } catch {
+      setErrorNivel2('No se pudo copiar automáticamente; seleccioná el texto manualmente.');
+    }
+  };
 
   useEffect(() => {
     if (mensajesChat.length > 0) {
@@ -589,15 +792,23 @@ export default function AdminPanel() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
       <LoadingOverlay
-        visible={cerrandoSesion || analizandoDoc || preparandoDoc || (cargandoDiagnostico && !healthData)}
+        visible={
+          cerrandoSesion ||
+          Boolean(ejecutandoAccionId) ||
+          analizandoDoc ||
+          preparandoDoc ||
+          (cargandoDiagnostico && !healthData)
+        }
         message={
           cerrandoSesion
             ? 'Cerrando sesión Admin...'
-            : preparandoDoc
-              ? 'Optimizando archivo para análisis...'
-              : analizandoDoc
-                ? 'Analizando documento y cruzando con planillas...'
-                : 'Ejecutando diagnóstico solo lectura...'
+            : ejecutandoAccionId
+              ? 'Ejecutando acción Nivel 2 autorizada...'
+              : preparandoDoc
+                ? 'Optimizando archivo para análisis...'
+                : analizandoDoc
+                  ? 'Analizando documento y cruzando con planillas...'
+                  : 'Ejecutando diagnóstico solo lectura...'
         }
       />
 
@@ -663,10 +874,10 @@ export default function AdminPanel() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                Etapa 4 — Motor Gemini 3.8 Flash + OCR/PDF + Base de Conocimiento (Nivel 1)
+                Etapa 5 — Nivel 1 (Consulta/OCR) + Nivel 2 (Aprobación Humana Obligatoria)
               </span>
               <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
-                Chat Central, Validador Documental y supervisión en tiempo real
+                Chat Central, Validador Documental, Bandeja Nivel 2 y Supervisión ERP
               </h2>
               <p className="text-xs text-slate-700 mt-0.5">
                 {healthData?.checkedAtAR
@@ -1163,6 +1374,21 @@ export default function AdminPanel() {
                           </div>
                         )}
 
+                      {resultadoDoc.crucePlanillas.clienteEncontrado && (
+                        <div className="pt-2">
+                          <button
+                            type="button"
+                            onClick={handleEnviarDocABandejaNivel2}
+                            className="w-full py-3 px-4 rounded-2xl bg-[#0F4C5C] hover:bg-petroleo-dark text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-2 transition active:scale-[0.99]"
+                          >
+                            <PlusCircle className="w-4 h-4 text-[#FBF8CC] shrink-0" />
+                            <span>
+                              + Enviar a Bandeja de Aprobación (Marcar como Pagado/Verificado)
+                            </span>
+                          </button>
+                        </div>
+                      )}
+
                       {Array.isArray(resultadoDoc.crucePlanillas.fuentesConsultadas) && (
                         <p className="text-[10px] text-slate-400 pt-1">
                           Fuentes verificadas (solo lectura):{' '}
@@ -1174,6 +1400,474 @@ export default function AdminPanel() {
                 </div>
               </div>
             )}
+          </div>
+        </section>
+
+        {/* 0C. BANDEJA DE ACCIONES SUGERIDAS — NIVEL 2 (REQUIERE TU APROBACIÓN) */}
+        <section
+          ref={bandejaNivel2Ref}
+          className="bg-white rounded-3xl shadow-sm border-2 border-[#E36414]/35 overflow-hidden scroll-mt-24"
+        >
+          <div className="bg-[#0F4C5C] text-white px-4 sm:px-5 py-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-[#E36414] text-white flex items-center justify-center shrink-0 shadow-sm">
+                <Inbox className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black leading-tight">
+                  Bandeja de Acciones Sugeridas — Nivel 2 (Requiere tu aprobación)
+                </h3>
+                <p className="text-[11px] text-petroleo-100">
+                  Ninguna escritura se ejecuta sola: revisá el cambio propuesto y aprobá en 1 clic con auditoría en Log_Cerebro_IA
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-black bg-[#FBF8CC] text-[#0F4C5C] px-3 py-1 rounded-full shrink-0">
+              {accionesNivel2.length} {accionesNivel2.length === 1 ? 'pendiente' : 'pendientes'}
+            </span>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-5">
+            {avisoNivel2 && (
+              <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>{avisoNivel2}</span>
+              </div>
+            )}
+
+            {errorNivel2 && (
+              <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorNivel2}</span>
+              </div>
+            )}
+
+            {/* Lista de tarjetas pendientes de aprobación humana */}
+            {accionesNivel2.length === 0 ? (
+              <div className="p-5 rounded-2xl bg-[#F8FAFC] border border-dashed border-slate-300 text-center space-y-1.5">
+                <ShieldCheck className="w-7 h-7 text-[#0F4C5C]/50 mx-auto" />
+                <p className="text-xs font-black text-slate-700">
+                  No hay acciones pendientes de aprobación
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Podés enviar una propuesta desde el Validador Documental o usar el generador rápido de abajo.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {accionesNivel2.map((accion) => {
+                  const ejecutandoEsta = ejecutandoAccionId === accion.id;
+                  return (
+                    <article
+                      key={accion.id}
+                      className="rounded-2xl bg-[#FBF8CC]/45 border-2 border-amber-300/80 p-4 space-y-3"
+                    >
+                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                        <div className="space-y-0.5 min-w-0">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-[#E36414]">
+                            <span>Nivel 2 — Pendiente de aprobación</span>
+                            {accion.origen && <span className="text-slate-500">• {accion.origen}</span>}
+                          </span>
+                          <h4 className="text-sm font-black text-[#0F4C5C] leading-snug">
+                            {accion.tituloAccion}
+                          </h4>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold text-slate-500">
+                          {accion.creadoEn}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 bg-white rounded-xl p-3 border border-amber-200/80 text-xs">
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-slate-400 block">
+                            {accion.tipoAccion === 'registrar_regla_normativa' ? 'Tema' : 'Cliente / CUIT'}
+                          </span>
+                          <p className="font-black text-slate-900 mt-0.5 leading-snug">
+                            {accion.clienteNombre}
+                          </p>
+                          {accion.cuit && (
+                            <p className="text-[11px] font-mono text-slate-500">
+                              CUIT {formatCUIT(accion.cuit)}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-slate-400 block">
+                            Hoja destino
+                          </span>
+                          <p className="font-bold text-[#0F4C5C] mt-0.5 leading-snug">
+                            {accion.hojaDestino}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-slate-400 block">
+                            Cambio propuesto
+                          </span>
+                          <p className="font-extrabold text-emerald-800 mt-0.5 leading-snug">
+                            {accion.cambioPropuesto}
+                          </p>
+                        </div>
+                      </div>
+
+                      {accion.datosPayload?.contenidoRegla && (
+                        <p className="text-xs text-slate-700 bg-white rounded-xl p-3 border border-slate-200 leading-snug">
+                          <strong>Regla:</strong> {accion.datosPayload.contenidoRegla}
+                        </p>
+                      )}
+                      {accion.datosPayload?.observacion && (
+                        <p className="text-[11px] text-slate-600 leading-snug">
+                          <strong>Observación:</strong> {accion.datosPayload.observacion}
+                        </p>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-2.5 pt-1">
+                        <button
+                          type="button"
+                          disabled={Boolean(ejecutandoAccionId)}
+                          onClick={() => handleAprobarYEjecutarNivel2(accion)}
+                          className="py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                        >
+                          <Check className="w-4 h-4 shrink-0" />
+                          <span>{ejecutandoEsta ? 'Ejecutando...' : 'Aprobar y Ejecutar'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(ejecutandoAccionId)}
+                          onClick={() => handleDescartarAccionNivel2(accion.id)}
+                          className="py-3 px-4 rounded-xl bg-white hover:bg-red-50 disabled:opacity-50 text-red-700 border border-red-200 font-extrabold text-xs flex items-center justify-center gap-1.5 transition"
+                        >
+                          <X className="w-4 h-4 shrink-0" />
+                          <span>Descartar</span>
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Generador rápido Nivel 2 (3 pestañas) */}
+            <div className="pt-3 border-t border-slate-200 space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] font-black uppercase tracking-wider text-[#0F4C5C]">
+                  Generador rápido de propuestas Nivel 2
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setTabGeneradorN2('estado_pago')}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold border transition ${
+                      tabGeneradorN2 === 'estado_pago'
+                        ? 'bg-[#0F4C5C] text-white border-[#0F4C5C]'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-[#0F4C5C]/40'
+                    }`}
+                  >
+                    1. VEP / Honorario
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTabGeneradorN2('normativa')}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold border transition ${
+                      tabGeneradorN2 === 'normativa'
+                        ? 'bg-[#0F4C5C] text-white border-[#0F4C5C]'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-[#0F4C5C]/40'
+                    }`}
+                  >
+                    2. Regla Normativa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTabGeneradorN2('borrador_msg')}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold border transition ${
+                      tabGeneradorN2 === 'borrador_msg'
+                        ? 'bg-[#E36414] text-white border-[#E36414]'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-[#E36414]/40'
+                    }`}
+                  >
+                    3. Borrador WhatsApp / Telegram
+                  </button>
+                </div>
+              </div>
+
+              {/* Generador 1: Actualizar Estado VEP o Honorario */}
+              {tabGeneradorN2 === 'estado_pago' && (
+                <form
+                  onSubmit={handleCrearPropuestaPago}
+                  className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-4 space-y-3"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Acción
+                      </label>
+                      <select
+                        value={propTipoPago}
+                        onChange={(e) => setPropTipoPago(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-[#0F4C5C] focus:outline-none focus:border-[#0F4C5C]"
+                      >
+                        <option value="actualizar_estado_vep">Actualizar Estado VEP</option>
+                        <option value="actualizar_estado_honorario">Actualizar Estado Honorario</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        CUIT del cliente (11 dígitos) *
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        required
+                        value={propCuit}
+                        onChange={(e) => setPropCuit(formatCUIT(e.target.value))}
+                        placeholder="20-34567890-4"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Período (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={propPeriodo}
+                        onChange={(e) => setPropPeriodo(e.target.value)}
+                        placeholder="2026-11"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Nuevo Estado
+                      </label>
+                      <select
+                        value={propNuevoEstado}
+                        onChange={(e) => setPropNuevoEstado(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-[#0F4C5C] focus:outline-none focus:border-[#0F4C5C]"
+                      >
+                        <option value="PAGADO">PAGADO</option>
+                        <option value="A VERIFICAR">A VERIFICAR</option>
+                        <option value="PENDIENTE">PENDIENTE</option>
+                        <option value="ENVIADO">ENVIADO</option>
+                        <option value="VENCIDO">VENCIDO</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Nombre cliente (referencia visual)
+                      </label>
+                      <input
+                        type="text"
+                        value={propClienteNombre}
+                        onChange={(e) => setPropClienteNombre(e.target.value)}
+                        placeholder="Ej: Pérez Juan Carlos"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Observación de auditoría
+                      </label>
+                      <input
+                        type="text"
+                        value={propObservacion}
+                        onChange={(e) => setPropObservacion(e.target.value)}
+                        placeholder="Ej: Comprobante PagoMisCuentas verificado"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0F4C5C] hover:bg-petroleo-dark text-white font-extrabold text-xs shadow-sm transition"
+                  >
+                    <PlusCircle className="w-4 h-4 text-[#FBF8CC]" />
+                    <span>Proponer en Bandeja Nivel 2 (sin escribir todavía)</span>
+                  </button>
+                </form>
+              )}
+
+              {/* Generador 2: Proponer Nueva Regla Normativa */}
+              {tabGeneradorN2 === 'normativa' && (
+                <form
+                  onSubmit={handleCrearPropuestaRegla}
+                  className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-4 space-y-3"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Tema de la regla *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={reglaTema}
+                        onChange={(e) => setReglaTema(e.target.value)}
+                        placeholder="Ej: Recategorización Semestral ARCA — Plazos y topes"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Categoría
+                      </label>
+                      <select
+                        value={reglaCategoria}
+                        onChange={(e) => setReglaCategoria(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-[#0F4C5C] focus:outline-none focus:border-[#0F4C5C]"
+                      >
+                        <option value="Monotributo">Monotributo</option>
+                        <option value="VEP / Pagos">VEP / Pagos</option>
+                        <option value="Ingresos Brutos / CM">Ingresos Brutos / CM</option>
+                        <option value="Ganancias">Ganancias</option>
+                        <option value="Facturación ARCA">Facturación ARCA</option>
+                        <option value="General">General</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                      Contenido de la regla / criterio vigente *
+                    </label>
+                    <textarea
+                      rows={3}
+                      required
+                      value={reglaContenido}
+                      onChange={(e) => setReglaContenido(e.target.value)}
+                      placeholder="Describí con precisión el criterio técnico u operativo a aplicar..."
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Vigencia desde
+                      </label>
+                      <input
+                        type="text"
+                        value={reglaVigenciaDesde}
+                        onChange={(e) => setReglaVigenciaDesde(e.target.value)}
+                        placeholder="dd/mm/aaaa"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Fuente normativa
+                      </label>
+                      <input
+                        type="text"
+                        value={reglaFuente}
+                        onChange={(e) => setReglaFuente(e.target.value)}
+                        placeholder="Ej: RG ARCA / Ley 24.977 / Protocolo GR"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0F4C5C] hover:bg-petroleo-dark text-white font-extrabold text-xs shadow-sm transition"
+                  >
+                    <BookOpen className="w-4 h-4 text-[#FBF8CC]" />
+                    <span>Proponer regla para Base_Conocimiento_IA</span>
+                  </button>
+                </form>
+              )}
+
+              {/* Generador 3: Borrador WhatsApp / Telegram (copia manual controlada) */}
+              {tabGeneradorN2 === 'borrador_msg' && (
+                <div className="rounded-2xl bg-[#F8FAFC] border border-slate-200 p-4 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Plantilla
+                      </label>
+                      <select
+                        value={msgPlantilla}
+                        onChange={(e) => setMsgPlantilla(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-[#0F4C5C] focus:outline-none focus:border-[#0F4C5C]"
+                      >
+                        <option value="vep_pendiente">VEP pendiente</option>
+                        <option value="honorarios_pendientes">Honorarios pendientes</option>
+                        <option value="pago_confirmado">Pago confirmado</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Cliente
+                      </label>
+                      <input
+                        type="text"
+                        value={msgCliente}
+                        onChange={(e) => setMsgCliente(e.target.value)}
+                        placeholder="Ej: Juan"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Período
+                      </label>
+                      <input
+                        type="text"
+                        value={msgPeriodo}
+                        onChange={(e) => setMsgPeriodo(e.target.value)}
+                        placeholder="11/2026"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-extrabold uppercase text-slate-500 mb-1">
+                        Importe (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={msgImporte}
+                        onChange={(e) => setMsgImporte(e.target.value)}
+                        placeholder="Ej: $ 58.027,18"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold focus:outline-none focus:border-[#0F4C5C]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-white border border-slate-200 p-3.5 text-xs text-slate-800 leading-relaxed whitespace-pre-wrap">
+                    {borradorMensajeTexto}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[11px] text-slate-500">
+                      Envío manual controlado: copiá el texto y pegalo en WhatsApp o Telegram.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCopiarBorradorMensaje}
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#E36414] hover:bg-ladrillo-dark text-white font-extrabold text-xs shadow-sm transition active:scale-95"
+                    >
+                      {msgCopiado ? (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>¡Mensaje copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>Copiar mensaje</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 

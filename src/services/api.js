@@ -995,6 +995,32 @@ export async function adminAnalizarDocumento({ fileBase64, mimeType, fileName, s
   return data;
 }
 
+export async function adminEjecutarAccionNivel2({ sessionToken, tipoAccion, datos = {} }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+
+  const data = await postAppsScriptAdmin('admin_ejecutar_accion_nivel2', {
+    sessionToken: token,
+    tipoAccion,
+    confirmadoPorAdmin: true,
+    ...datos
+  });
+
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo ejecutar la acción Nivel 2.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) {
+      err.sessionExpired = true;
+    }
+    throw err;
+  }
+  return data;
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */
