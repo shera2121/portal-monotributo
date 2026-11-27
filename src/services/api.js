@@ -930,6 +930,40 @@ export async function adminHealthcheck({ sessionToken }) {
   return data;
 }
 
+export async function adminCerebroChat({ message, sessionToken, history = [] }) {
+  const token = String(sessionToken || '').trim();
+  const texto = String(message || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  if (!texto) {
+    throw new Error('Escribí una consulta antes de enviar.');
+  }
+
+  const res = await fetch('/api/cerebro', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: texto,
+      sessionToken: token,
+      history
+    })
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 || /sesi[oó]n\s+expirada/i.test(data?.error || '')) {
+    const err = new Error(data?.error || 'Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(data?.error || `Error en /api/cerebro (HTTP ${res.status})`);
+  }
+  return data;
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -15,13 +15,20 @@ import {
   FileSpreadsheet,
   Globe,
   KeyRound,
+  Loader2,
   Lock,
   LogOut,
+  MessageSquare,
   RefreshCw,
+  Send,
   ShieldCheck,
-  Smartphone
+  Smartphone,
+  Sparkles,
+  Trash2,
+  Wrench
 } from 'lucide-react';
 import {
+  adminCerebroChat,
   adminHealthcheck,
   adminLogin,
   adminLogout,
@@ -52,6 +59,46 @@ const PLANILLAS_FALLBACK = [
   { id: 'convenio_multilateral', nombre: 'Convenio Multilateral', propiedad: 'SHEET_ID_CONVENIO' },
   { id: 'errepar_4ta', nombre: 'Errepar, retenciones 4ta categoría', propiedad: 'SHEET_ID_ERREPAR_4TA' }
 ];
+
+const CONSULTAS_RAPIDAS_CEREBRO = [
+  '¿Qué clientes tienen VEP pendiente de revisión?',
+  'Mostrame el estado de honorarios pendientes',
+  'Revisá alertas de ARCA y próximos vencimientos'
+];
+
+const ETIQUETAS_HERRAMIENTAS = {
+  buscar_cliente: 'Buscar cliente',
+  consultar_veps: 'Consultar VEPs',
+  consultar_honorarios: 'Consultar honorarios',
+  consultar_vencimientos_y_alertas: 'Vencimientos y Alertas ARCA'
+};
+
+function renderTextoFormateadoIA(texto) {
+  const lineas = String(texto || '').split('\n');
+  return lineas.map((linea, idx) => {
+    const trimmed = linea.trim();
+    if (!trimmed) return <div key={idx} className="h-2" />;
+
+    // Renderizar **negritas** inline de forma segura sin dangerouslySetInnerHTML
+    const partes = linea.split(/(\*\*[^*]+\*\*)/g).map((seg, sIdx) => {
+      if (seg.startsWith('**') && seg.endsWith('**') && seg.length > 4) {
+        return (
+          <strong key={sIdx} className="font-extrabold text-slate-900">
+            {seg.slice(2, -2)}
+          </strong>
+        );
+      }
+      return <React.Fragment key={sIdx}>{seg}</React.Fragment>;
+    });
+
+    const esBullet = /^[-•*]\s+/.test(trimmed);
+    return (
+      <p key={idx} className={esBullet ? 'pl-2 leading-relaxed' : 'leading-relaxed'}>
+        {partes}
+      </p>
+    );
+  });
+}
 
 function obtenerEstiloEstado(statusRaw) {
   const st = String(statusRaw || '').toUpperCase();
@@ -110,13 +157,80 @@ export default function AdminPanel() {
   const [errorDiagnostico, setErrorDiagnostico] = useState('');
   const [planillasExpandidas, setPlanillasExpandidas] = useState({});
 
+  // Estado del Chat Central — GR Cerebro de IA (Etapa 3 — Nivel 1 Function Calling)
+  const [mensajesChat, setMensajesChat] = useState([]);
+  const [inputChat, setInputChat] = useState('');
+  const [enviandoChat, setEnviandoChat] = useState(false);
+  const [errorChat, setErrorChat] = useState('');
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    if (mensajesChat.length > 0) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [mensajesChat, enviandoChat]);
+
   const forzarVueltaAlLogin = useCallback((mensaje) => {
     eliminarStorageSeguro(ADMIN_SESSION_KEY);
     setSesionAdmin(null);
     setHealthData(null);
+    setMensajesChat([]);
     setErrorDiagnostico('');
+    setErrorChat('');
     setError(mensaje || 'Tu sesión de administrador expiró. Ingresá nuevamente tu Clave Maestra.');
   }, []);
+
+  const enviarConsultaCerebro = useCallback(
+    async (textoManual) => {
+      const consulta = String(textoManual !== undefined ? textoManual : inputChat).trim();
+      if (!consulta || enviandoChat || !sesionAdmin?.sessionToken) return;
+
+      setErrorChat('');
+      setInputChat('');
+
+      const historialPrevio = mensajesChat.map((m) => ({
+        role: m.role,
+        text: m.text
+      }));
+
+      const nuevoMsgUsuario = {
+        id: `usr-${Date.now()}`,
+        role: 'user',
+        text: consulta,
+        hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
+      };
+
+      setMensajesChat((prev) => [...prev, nuevoMsgUsuario]);
+      setEnviandoChat(true);
+
+      try {
+        const res = await adminCerebroChat({
+          message: consulta,
+          sessionToken: sesionAdmin.sessionToken,
+          history: historialPrevio
+        });
+
+        const nuevoMsgIA = {
+          id: `ia-${Date.now()}`,
+          role: 'model',
+          text: res.reply || 'Sin respuesta del asistente.',
+          toolsUsed: Array.isArray(res.toolsUsed) ? res.toolsUsed : [],
+          model: res.model || 'gemini-2.5-flash',
+          hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
+        };
+        setMensajesChat((prev) => [...prev, nuevoMsgIA]);
+      } catch (err) {
+        if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+          forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+          return;
+        }
+        setErrorChat(err?.message || 'No se pudo obtener respuesta de GR Cerebro de IA.');
+      } finally {
+        setEnviandoChat(false);
+      }
+    },
+    [inputChat, enviandoChat, sesionAdmin?.sessionToken, mensajesChat, forzarVueltaAlLogin]
+  );
 
   const ejecutarDiagnostico = useCallback(
     async (token) => {
@@ -448,22 +562,22 @@ export default function AdminPanel() {
       </header>
 
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* Banner de Estado Etapa 2 */}
+        {/* Banner de Estado Etapa 3 */}
         <section className="bg-[#FBF8CC] border border-amber-300/80 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-2xl bg-[#0F4C5C] text-[#FBF8CC] flex items-center justify-center shrink-0">
-              <ShieldCheck className="w-5 h-5" />
+              <Sparkles className="w-5 h-5" />
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                Etapa 2 — Conector Solo Lectura y Supervisión Técnica (Módulo 5)
+                Etapa 3 — Motor Gemini 2.5 Flash (Function Calling) + Supervisión Técnica
               </span>
               <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
-                Diagnóstico en tiempo real de las 7 planillas y servicios del estudio
+                Chat Central de consulta sobre planillas reales y diagnóstico del estudio
               </h2>
               <p className="text-xs text-slate-700 mt-0.5">
                 {healthData?.checkedAtAR
-                  ? `Última verificación: ${healthData.checkedAtAR} • Estricto Nivel 1 (sin escrituras ni Gemini API).`
+                  ? `Última verificación técnica: ${healthData.checkedAtAR} • Estricto Nivel 1 (Solo Lectura auditado en Log_Cerebro_IA).`
                   : 'Consultando estado de conectores en estricto modo solo lectura...'}
               </p>
             </div>
@@ -486,6 +600,199 @@ export default function AdminPanel() {
               )}
             </div>
           )}
+        </section>
+
+        {/* 0. CHAT CENTRAL — GR CEREBRO DE IA (MÓDULOS 1 Y 3 — NIVEL 1 SOLO LECTURA) */}
+        <section className="bg-white rounded-3xl shadow-sm border-2 border-[#0F4C5C]/20 overflow-hidden">
+          <div className="bg-[#0F4C5C] text-white px-4 sm:px-5 py-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-2xl bg-white/15 border border-[#FBF8CC]/30 text-[#FBF8CC] flex items-center justify-center shrink-0">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black leading-tight">
+                  Chat Central — GR Cerebro de IA
+                </h3>
+                <p className="text-[11px] text-petroleo-100">
+                  Gemini 2.5 Flash • 4 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos y Alertas)
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider bg-[#FBF8CC] text-[#0F4C5C] px-2.5 py-1 rounded-full">
+                Solo Lectura
+              </span>
+              {mensajesChat.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMensajesChat([]);
+                    setErrorChat('');
+                  }}
+                  disabled={enviandoChat}
+                  title="Limpiar conversación"
+                  className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-4">
+            {/* 3 botones de consulta rápida */}
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
+                Consultas rápidas de ejemplo
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {CONSULTAS_RAPIDAS_CEREBRO.map((pregunta) => (
+                  <button
+                    key={pregunta}
+                    type="button"
+                    disabled={enviandoChat}
+                    onClick={() => enviarConsultaCerebro(pregunta)}
+                    className="text-left text-xs font-bold bg-[#F8FAFC] hover:bg-petroleo-50 text-[#0F4C5C] border border-slate-200 hover:border-[#0F4C5C]/40 disabled:opacity-50 px-3 py-2 rounded-2xl transition active:scale-[0.99]"
+                  >
+                    {pregunta}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Historial de mensajes */}
+            <div className="rounded-2xl bg-[#F8FAFC] border border-slate-200/80 p-3.5 sm:p-4 max-h-[420px] overflow-y-auto space-y-3.5">
+              {mensajesChat.length === 0 ? (
+                <div className="py-6 text-center space-y-2">
+                  <Sparkles className="w-7 h-7 text-[#E36414] mx-auto" />
+                  <p className="text-xs sm:text-sm font-black text-[#0F4C5C]">
+                    Listo para consultar las planillas reales del estudio
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                    Probá cualquiera de los accesos rápidos de arriba o preguntá por un cliente (CUIT o nombre), VEPs, honorarios, vencimientos o alertas de ARCA. Cada consulta queda auditada en <strong className="font-mono text-[#0F4C5C]">Log_Cerebro_IA</strong>.
+                  </p>
+                </div>
+              ) : (
+                mensajesChat.map((msg) => {
+                  const esUsuario = msg.role === 'user';
+                  const tools = Array.isArray(msg.toolsUsed) ? msg.toolsUsed : [];
+                  const fuentesUnicas = Array.from(
+                    new Set(tools.flatMap((t) => (Array.isArray(t.fuentes) ? t.fuentes : [])))
+                  );
+
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex flex-col ${esUsuario ? 'items-end' : 'items-start'}`}
+                    >
+                      <div
+                        className={`max-w-[92%] sm:max-w-[85%] rounded-2xl px-4 py-3 text-xs sm:text-[13px] shadow-sm space-y-2 ${
+                          esUsuario
+                            ? 'bg-[#0F4C5C] text-white rounded-br-md'
+                            : 'bg-white border border-slate-200 text-slate-800 rounded-bl-md'
+                        }`}
+                      >
+                        {/* Badges de herramientas consultadas en este turno */}
+                        {!esUsuario && tools.length > 0 && (
+                          <div className="pb-2 border-b border-slate-100 space-y-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                                <Wrench className="w-3 h-3 text-[#E36414]" />
+                                <span>Herramientas consultadas:</span>
+                              </span>
+                              {tools.map((t, tIdx) => (
+                                <span
+                                  key={`${t.name}-${tIdx}`}
+                                  className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                                    t.ok
+                                      ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-900 border-amber-200'
+                                  }`}
+                                >
+                                  <span>{ETIQUETAS_HERRAMIENTAS[t.name] || t.name}</span>
+                                </span>
+                              ))}
+                            </div>
+                            {fuentesUnicas.length > 0 && (
+                              <p className="text-[10px] text-slate-500 leading-snug">
+                                <strong>Fuentes:</strong> {fuentesUnicas.join(' • ')}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="space-y-1">
+                          {esUsuario ? (
+                            <p className="font-semibold leading-relaxed whitespace-pre-wrap">
+                              {msg.text}
+                            </p>
+                          ) : (
+                            renderTextoFormateadoIA(msg.text)
+                          )}
+                        </div>
+
+                        <div
+                          className={`text-[10px] text-right ${
+                            esUsuario ? 'text-petroleo-100/80' : 'text-slate-400'
+                          }`}
+                        >
+                          {msg.hora}
+                          {!esUsuario && msg.model ? ` • ${msg.model}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+
+              {enviandoChat && (
+                <div className="flex items-start">
+                  <div className="bg-white border border-[#0F4C5C]/20 rounded-2xl rounded-bl-md px-4 py-3 text-xs font-bold text-[#0F4C5C] flex items-center gap-2 shadow-sm">
+                    <Loader2 className="w-4 h-4 animate-spin text-[#E36414] shrink-0" />
+                    <span>GR Cerebro consultando planillas en Nivel 1...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {errorChat && (
+              <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorChat}</span>
+              </div>
+            )}
+
+            {/* Barra de entrada del Chat */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                enviarConsultaCerebro();
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                type="text"
+                value={inputChat}
+                onChange={(e) => {
+                  setInputChat(e.target.value);
+                  if (errorChat) setErrorChat('');
+                }}
+                disabled={enviandoChat}
+                placeholder="Consultá por un cliente (CUIT o nombre), VEPs, honorarios, alertas o vencimientos..."
+                className="flex-1 px-4 py-3 rounded-2xl border-2 border-slate-200 bg-slate-50 focus:bg-white text-xs sm:text-sm font-semibold text-slate-900 focus:outline-none focus:border-[#0F4C5C] transition"
+              />
+              <button
+                type="submit"
+                disabled={enviandoChat || !inputChat.trim()}
+                className="inline-flex items-center justify-center gap-1.5 px-4 sm:px-5 py-3 rounded-2xl bg-[#E36414] hover:bg-ladrillo-dark disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm shadow-sm transition active:scale-95 shrink-0"
+              >
+                <Send className="w-4 h-4" />
+                <span className="hidden sm:inline">Consultar</span>
+              </button>
+            </form>
+          </div>
         </section>
 
         {errorDiagnostico && (
