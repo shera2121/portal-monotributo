@@ -942,17 +942,40 @@ export async function adminCerebroChat({ message, sessionToken, history = [] }) 
     throw new Error('Escribí una consulta antes de enviar.');
   }
 
-  const res = await fetch('/api/cerebro', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message: texto,
-      sessionToken: token,
-      history
-    })
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-  const data = await res.json().catch(() => ({}));
+  let res;
+  try {
+    res = await fetch('/api/cerebro', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        message: texto,
+        sessionToken: token,
+        history: Array.isArray(history) ? history.slice(-6) : []
+      })
+    });
+  } catch (errFetch) {
+    if (errFetch?.name === 'AbortError') {
+      throw new Error(
+        'La consulta excedió los 25 segundos. Probá tocar "Sincronizar 7 Planillas" o reintentar.'
+      );
+    }
+    throw new Error(errFetch?.message || 'Error de conexión con /api/cerebro.');
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const rawText = await res.text();
+  let data = {};
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    throw new Error(`El servidor devolvió una respuesta no JSON (HTTP ${res.status}).`);
+  }
+
   if (res.status === 401 || /sesi[oó]n\s+expirada/i.test(data?.error || '')) {
     const err = new Error(data?.error || 'Sesión expirada');
     err.sessionExpired = true;
@@ -960,6 +983,23 @@ export async function adminCerebroChat({ message, sessionToken, history = [] }) 
   }
   if (!res.ok || !data || data.ok !== true) {
     throw new Error(data?.error || `Error en /api/cerebro (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+export async function adminForzarReindexado({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_forzar_reindexado', { sessionToken: token });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo sincronizar el Índice Unificado de las 7 Planillas.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) err.sessionExpired = true;
+    throw err;
   }
   return data;
 }

@@ -46,6 +46,7 @@ import {
   adminEjecutarAccionNivel2,
   adminEjecutarRutinaNivel3,
   adminExportarLogs,
+  adminForzarReindexado,
   adminGuardarConfigNivel3,
   adminHealthcheck,
   adminLogin,
@@ -89,6 +90,7 @@ const CONSULTAS_RAPIDAS_CEREBRO = [
 ];
 
 const ETIQUETAS_HERRAMIENTAS = {
+  indice_unificado_7_planillas: 'Índice Unificado (7 Planillas + PWA)',
   buscar_cliente: 'Buscar cliente',
   consultar_veps: 'Consultar VEPs',
   consultar_honorarios: 'Consultar honorarios',
@@ -212,11 +214,14 @@ export default function AdminPanel() {
   const [errorDiagnostico, setErrorDiagnostico] = useState('');
   const [planillasExpandidas, setPlanillasExpandidas] = useState({});
 
-  // Estado del Chat Central — GR Cerebro de IA (Etapa 3/4 — Nivel 1 Function Calling)
+  // Estado del Chat Central — GR Cerebro de IA (Groq Llama 3.3 70B + Índice Unificado)
   const [mensajesChat, setMensajesChat] = useState([]);
   const [inputChat, setInputChat] = useState('');
   const [enviandoChat, setEnviandoChat] = useState(false);
   const [errorChat, setErrorChat] = useState('');
+  const [sincronizandoIndice, setSincronizandoIndice] = useState(false);
+  const [indiceActualizadoEn, setIndiceActualizadoEn] = useState('');
+  const [avisoIndice, setAvisoIndice] = useState('');
   const chatEndRef = useRef(null);
 
   // Estado del Validador Documental OCR/PDF — Etapa 4 (Nivel 1 Solo Lectura)
@@ -505,15 +510,42 @@ export default function AdminPanel() {
     }
   };
 
+  const handleSincronizarIndice7Planillas = async () => {
+    if (!sesionAdmin?.sessionToken || sincronizandoIndice) return;
+    setErrorChat('');
+    setAvisoIndice('');
+    setSincronizandoIndice(true);
+    try {
+      const res = await adminForzarReindexado({ sessionToken: sesionAdmin.sessionToken });
+      if (res?.actualizadoEn) setIndiceActualizadoEn(res.actualizadoEn);
+      const okCount = Array.isArray(res?.resumenPlanillas)
+        ? res.resumenPlanillas.filter((p) => p.status === 'OK').length
+        : 0;
+      setAvisoIndice(
+        `Índice Unificado sincronizado (${okCount}/7 planillas OK • ${res?.actualizadoEn || 'ahora'}).`
+      );
+      await ejecutarDiagnostico(sesionAdmin.sessionToken);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorChat(err?.message || 'No se pudo sincronizar el Índice Unificado.');
+    } finally {
+      setSincronizandoIndice(false);
+    }
+  };
+
   const enviarConsultaCerebro = useCallback(
     async (textoManual) => {
       const consulta = String(textoManual !== undefined ? textoManual : inputChat).trim();
       if (!consulta || enviandoChat || !sesionAdmin?.sessionToken) return;
 
       setErrorChat('');
+      setAvisoIndice('');
       setInputChat('');
 
-      const historialPrevio = mensajesChat.map((m) => ({
+      const historialPrevio = mensajesChat.slice(-6).map((m) => ({
         role: m.role,
         text: m.text
       }));
@@ -535,19 +567,21 @@ export default function AdminPanel() {
           history: historialPrevio
         });
 
+        if (res?.indiceActualizadoEn) {
+          setIndiceActualizadoEn(res.indiceActualizadoEn);
+        }
+
         const nuevoMsgIA = {
           id: `ia-${Date.now()}`,
           role: 'model',
           text: res.reply || 'Sin respuesta del asistente.',
           toolsUsed: Array.isArray(res.toolsUsed) ? res.toolsUsed : [],
-          model: res.model || 'gemini-3.8-flash',
-          primaryModel: res.primaryModel || 'gemini-3.8-flash',
+          model: res.model || 'llama-3.3-70b-versatile',
+          primaryModel: res.primaryModel || 'llama-3.3-70b-versatile',
           usedFallback: Boolean(res.usedFallback),
           modelStatusMessage:
             res.modelStatusMessage ||
-            (res.usedFallback
-              ? `Respondido por modelo de respaldo (${res.model || 'alternativo'})`
-              : `Respondido por modelo principal (${res.model || 'gemini-3.8-flash'})`),
+            'Groq Llama 3.3 70B • Índice Unificado (7 Planillas + PWA)',
           hora: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
         };
         setMensajesChat((prev) => [...prev, nuevoMsgIA]);
@@ -1103,12 +1137,27 @@ export default function AdminPanel() {
                   Chat Central — GR Cerebro de IA
                 </h3>
                 <p className="text-[11px] text-petroleo-100">
-                  Gemini 3.8 Flash • 5 herramientas Nivel 1 (Clientes, VEPs, Honorarios, Vencimientos/Alertas y Normativa)
+                  Groq Llama 3.3 70B • Índice Unificado (7 Planillas + PWA)
                 </p>
+                {indiceActualizadoEn && (
+                  <p className="text-[10px] text-[#FBF8CC]/90 font-semibold mt-0.5">
+                    Última sincronización del índice: {indiceActualizadoEn}
+                  </p>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                disabled={sincronizandoIndice || enviandoChat}
+                onClick={handleSincronizarIndice7Planillas}
+                className="inline-flex items-center gap-1.5 text-[11px] font-extrabold bg-[#E36414] hover:bg-ladrillo-dark disabled:opacity-60 text-white px-3 py-1.5 rounded-xl shadow-sm transition active:scale-95"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${sincronizandoIndice ? 'animate-spin' : ''}`} />
+                <span>{sincronizandoIndice ? 'Sincronizando...' : 'Sincronizar 7 Planillas'}</span>
+              </button>
+
               <span className="text-[10px] font-extrabold uppercase tracking-wider bg-[#FBF8CC] text-[#0F4C5C] px-2.5 py-1 rounded-full">
                 Solo Lectura
               </span>
@@ -1118,6 +1167,7 @@ export default function AdminPanel() {
                   onClick={() => {
                     setMensajesChat([]);
                     setErrorChat('');
+                    setAvisoIndice('');
                   }}
                   disabled={enviandoChat}
                   title="Limpiar conversación"
@@ -1130,6 +1180,12 @@ export default function AdminPanel() {
           </div>
 
           <div className="p-4 sm:p-5 space-y-4">
+            {avisoIndice && (
+              <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{avisoIndice}</span>
+              </div>
+            )}
             {/* 3 botones de consulta rápida */}
             <div className="space-y-1.5">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
