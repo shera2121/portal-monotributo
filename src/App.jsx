@@ -33,6 +33,7 @@ import {
   leerJsonSeguro
 } from './utils/storage.js';
 import BottomNav from './components/BottomNav.jsx';
+import AdminPanel from './components/AdminPanel.jsx';
 import CargarComprobanteTab from './components/CargarComprobanteTab.jsx';
 import FacturarTab from './components/FacturarTab.jsx';
 import HistorialTab from './components/HistorialTab.jsx';
@@ -61,7 +62,29 @@ function tieneCredencialesValidas(creds) {
   return /^\d{11}$/.test(cuitLimpio) && pinLimpio.length > 0;
 }
 
+function esRutaOcultaAdmin() {
+  try {
+    const pathname = String(window.location.pathname || '')
+      .replace(/\/+$/, '')
+      .toLowerCase();
+    const params = new URLSearchParams(window.location.search);
+    const modo = String(params.get('modo') || '').trim().toLowerCase();
+    return pathname === '/admin' || modo === 'admin';
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
+  // Ruta oculta exclusiva para el Administrador (/admin o ?modo=admin).
+  // Totalmente aislada del portal y de la sesión de clientes.
+  if (esRutaOcultaAdmin()) {
+    return <AdminPanel />;
+  }
+  return <ClientPortalApp />;
+}
+
+function ClientPortalApp() {
   // Leer parámetros de enlace privado (?cuit=...&chat_id=...&exp=...&sig=...&k=...)
   const parametrosUrl = useMemo(() => {
     try {

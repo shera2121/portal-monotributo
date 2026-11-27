@@ -851,6 +851,66 @@ export async function savePushSubscription({ cuit, pin, payload }) {
   });
 }
 
+// ============================================================================
+// GR CEREBRO CENTRAL DE IA — ETAPA 1: ENDPOINTS EXCLUSIVOS DE ADMINISTRADOR
+// (Aislados por completo de la sesión y endpoints de clientes)
+// ============================================================================
+async function postAppsScriptAdmin(action, payload = {}) {
+  const urlBase = obtenerAppsScriptUrl();
+  if (!urlBase || !urlBase.startsWith('https://script.google.com/')) {
+    throw new Error('No está configurada la URL de Google Apps Script en el portal.');
+  }
+
+  const res = await fetch(urlBase, {
+    method: 'POST',
+    redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action,
+      payload
+    })
+  });
+
+  const text = await res.text();
+  let json = {};
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error('El servidor respondió en un formato inesperado.');
+  }
+  return json;
+}
+
+export async function adminLogin({ masterKey }) {
+  const claveLimpia = String(masterKey || '').trim();
+  if (!claveLimpia) {
+    throw new Error('Ingresá tu Clave Maestra de Administrador.');
+  }
+  const data = await postAppsScriptAdmin('admin_login', { masterKey: claveLimpia });
+  if (!data || data.ok !== true || !data.sessionToken) {
+    throw new Error(data?.error || 'Credenciales inválidas');
+  }
+  return data;
+}
+
+export async function adminVerifySession({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    return { ok: false, valid: false, error: 'Sin sesión activa.' };
+  }
+  return postAppsScriptAdmin('admin_verify_session', { sessionToken: token });
+}
+
+export async function adminLogout({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) return { ok: true };
+  try {
+    return await postAppsScriptAdmin('admin_logout', { sessionToken: token });
+  } catch {
+    return { ok: true };
+  }
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */
