@@ -1021,6 +1021,81 @@ export async function adminEjecutarAccionNivel2({ sessionToken, tipoAccion, dato
   return data;
 }
 
+export async function adminObtenerConfigNivel3({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_obtener_config_nivel3', { sessionToken: token });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo leer la configuración de Nivel 3.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) err.sessionExpired = true;
+    throw err;
+  }
+  return data;
+}
+
+export async function adminGuardarConfigNivel3({ sessionToken, config }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_guardar_config_nivel3', {
+    sessionToken: token,
+    config
+  });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo guardar la configuración de Nivel 3.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) err.sessionExpired = true;
+    throw err;
+  }
+  return data;
+}
+
+export async function adminEjecutarRutinaNivel3({ sessionToken, rutina }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_ejecutar_rutina_nivel3', {
+    sessionToken: token,
+    rutina,
+    origen: 'manual_admin'
+  });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo ejecutar la rutina supervisada Nivel 3.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) err.sessionExpired = true;
+    throw err;
+  }
+  return data;
+}
+
+export async function adminExportarLogs({ sessionToken }) {
+  const token = String(sessionToken || '').trim();
+  if (!token) {
+    const err = new Error('Sesión expirada');
+    err.sessionExpired = true;
+    throw err;
+  }
+  const data = await postAppsScriptAdmin('admin_exportar_logs', { sessionToken: token });
+  if (!data || data.ok !== true) {
+    const msg = data?.error || 'No se pudo exportar la bitácora Log_Cerebro_IA.';
+    const err = new Error(msg);
+    if (/sesi[oó]n\s+expirada/i.test(msg)) err.sessionExpired = true;
+    throw err;
+  }
+  return data;
+}
+
 /**
  * Compatibilidad Modo Contador (directorio de clientes desde Google Sheets)
  */

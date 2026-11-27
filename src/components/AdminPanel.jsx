@@ -13,6 +13,7 @@ import {
   Copy,
   Cpu,
   Database,
+  Download,
   Eye,
   EyeOff,
   FileSearch,
@@ -25,9 +26,12 @@ import {
   Lock,
   LogOut,
   MessageSquare,
+  Play,
   PlusCircle,
+  Power,
   RefreshCw,
   Send,
+  ShieldAlert,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -40,9 +44,13 @@ import {
   adminAnalizarDocumento,
   adminCerebroChat,
   adminEjecutarAccionNivel2,
+  adminEjecutarRutinaNivel3,
+  adminExportarLogs,
+  adminGuardarConfigNivel3,
   adminHealthcheck,
   adminLogin,
   adminLogout,
+  adminObtenerConfigNivel3,
   adminVerifySession
 } from '../services/api.js';
 import { cleanCUIT, formatARS, formatCUIT } from '../utils/fiscalCalculations.js';
@@ -87,6 +95,38 @@ const ETIQUETAS_HERRAMIENTAS = {
   consultar_vencimientos_y_alertas: 'Vencimientos y Alertas ARCA',
   consultar_normativa: 'Base de Conocimiento / Normativa'
 };
+
+const RUTINAS_NIVEL3_DEF = [
+  {
+    id: 'radar_vencimientos',
+    propKey: 'RUTINA_RADAR_VENCIMIENTOS',
+    titulo: 'Radar de Vencimientos',
+    descripcion:
+      'Resume próximos vencimientos, alertas ARCA pendientes y clientes con VEP mensual por revisar (solo lectura preventiva).'
+  },
+  {
+    id: 'auditoria_consistencia',
+    propKey: 'RUTINA_AUDITORIA_CONSISTENCIA',
+    titulo: 'Auditoría de Consistencia',
+    descripcion:
+      'Detecta CUITs duplicados o incompletos en Directorio Clientes y solicitudes en "A VERIFICAR" pendientes de control.'
+  },
+  {
+    id: 'salud_ecosistema',
+    propKey: 'RUTINA_SALUD_ECOSISTEMA',
+    titulo: 'Salud del Ecosistema',
+    descripcion:
+      'Verifica disponibilidad de las 7 planillas ERP, Bot 1, Bot 2 y Puente ARCA (GET diagnóstico sin emisión).'
+  }
+];
+
+function escaparCeldaCsv(valor) {
+  const str = String(valor ?? '');
+  if (/[",\r\n;]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
 
 function renderTextoFormateadoIA(texto) {
   const lineas = String(texto || '').split('\n');
@@ -585,12 +625,154 @@ export default function AdminPanel() {
     };
   }, []);
 
-  // Apenas queda autenticado el administrador, disparar admin_healthcheck automáticamente
+  // Estado de Nivel 3 (Automatizaciones Supervisadas + Gobernanza + Exportación CSV)
+  const [configNivel3, setConfigNivel3] = useState({
+    NIVEL3_ACTIVO: false,
+    RUTINA_RADAR_VENCIMIENTOS: false,
+    RUTINA_AUDITORIA_CONSISTENCIA: false,
+    RUTINA_SALUD_ECOSISTEMA: false,
+    nivel4Bloqueado: true
+  });
+  const [guardandoNivel3, setGuardandoNivel3] = useState(false);
+  const [ejecutandoRutinaN3, setEjecutandoRutinaN3] = useState('');
+  const [resultadosRutinasN3, setResultadosRutinasN3] = useState({});
+  const [avisoNivel3, setAvisoNivel3] = useState('');
+  const [errorNivel3, setErrorNivel3] = useState('');
+  const [exportandoCsv, setExportandoCsv] = useState(false);
+
+  const cargarConfigNivel3 = useCallback(
+    async (token) => {
+      if (!token) return;
+      try {
+        const res = await adminObtenerConfigNivel3({ sessionToken: token });
+        if (res?.config) setConfigNivel3(res.config);
+      } catch (err) {
+        if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+          forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        }
+      }
+    },
+    [forzarVueltaAlLogin]
+  );
+
+  const handleToggleConfigNivel3 = async (campo, nuevoValor) => {
+    if (!sesionAdmin?.sessionToken || guardandoNivel3) return;
+    setErrorNivel3('');
+    setAvisoNivel3('');
+    setGuardandoNivel3(true);
+    const siguiente = {
+      ...configNivel3,
+      [campo]: nuevoValor
+    };
+    try {
+      const res = await adminGuardarConfigNivel3({
+        sessionToken: sesionAdmin.sessionToken,
+        config: siguiente
+      });
+      if (res?.config) setConfigNivel3(res.config);
+      setAvisoNivel3(res?.resumen || 'Configuración de Nivel 3 actualizada y auditada.');
+      await ejecutarDiagnostico(sesionAdmin.sessionToken);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorNivel3(err?.message || 'No se pudo actualizar la configuración de Nivel 3.');
+    } finally {
+      setGuardandoNivel3(false);
+    }
+  };
+
+  const handleEjecutarRutinaNivel3 = async (rutinaId) => {
+    if (!sesionAdmin?.sessionToken || ejecutandoRutinaN3) return;
+    setErrorNivel3('');
+    setAvisoNivel3('');
+    setEjecutandoRutinaN3(rutinaId);
+    try {
+      const res = await adminEjecutarRutinaNivel3({
+        sessionToken: sesionAdmin.sessionToken,
+        rutina: rutinaId
+      });
+      setResultadosRutinasN3((prev) => ({
+        ...prev,
+        [rutinaId]: res
+      }));
+      setAvisoNivel3(`Rutina "${res.titulo || rutinaId}" finalizada y auditada en Log_Cerebro_IA.`);
+      await ejecutarDiagnostico(sesionAdmin.sessionToken);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorNivel3(err?.message || 'No se pudo ejecutar la rutina supervisada.');
+    } finally {
+      setEjecutandoRutinaN3('');
+    }
+  };
+
+  const handleExportarBitacoraCsv = async () => {
+    if (!sesionAdmin?.sessionToken || exportandoCsv) return;
+    setErrorDiagnostico('');
+    setExportandoCsv(true);
+    try {
+      const res = await adminExportarLogs({ sessionToken: sesionAdmin.sessionToken });
+      const encabezados = res.headers || [
+        'Fecha/Hora',
+        'Usuario',
+        'Nivel',
+        'Herramienta',
+        'Datos',
+        'Resultado',
+        'Autorización'
+      ];
+      const filas = Array.isArray(res.rows) ? res.rows : [];
+      const lineasCsv = [
+        encabezados.map(escaparCeldaCsv).join(','),
+        ...filas.map((r) =>
+          [
+            r.fechaHora,
+            r.usuario,
+            r.nivel,
+            r.herramienta,
+            r.datos,
+            r.resultado,
+            r.autorizacion
+          ]
+            .map(escaparCeldaCsv)
+            .join(',')
+        )
+      ];
+
+      const contenidoCsv = `\uFEFF${lineasCsv.join('\r\n')}`;
+      const blob = new Blob([contenidoCsv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const fechaHoy = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `Log_Cerebro_IA_${fechaHoy}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      await ejecutarDiagnostico(sesionAdmin.sessionToken);
+    } catch (err) {
+      if (err?.sessionExpired || /sesi[oó]n\s+expirada/i.test(err?.message || '')) {
+        forzarVueltaAlLogin('Sesión expirada. Ingresá nuevamente tu Clave Maestra de Administrador.');
+        return;
+      }
+      setErrorDiagnostico(err?.message || 'No se pudo exportar la bitácora CSV.');
+    } finally {
+      setExportandoCsv(false);
+    }
+  };
+
+  // Apenas queda autenticado el administrador, disparar admin_healthcheck y cargar config Nivel 3
   useEffect(() => {
     if (sesionAdmin?.sessionToken) {
       ejecutarDiagnostico(sesionAdmin.sessionToken);
+      cargarConfigNivel3(sesionAdmin.sessionToken);
     }
-  }, [sesionAdmin?.sessionToken, ejecutarDiagnostico]);
+  }, [sesionAdmin?.sessionToken, ejecutarDiagnostico, cargarConfigNivel3]);
 
   const handleLoginAdmin = async (e) => {
     e.preventDefault();
@@ -795,6 +977,7 @@ export default function AdminPanel() {
         visible={
           cerrandoSesion ||
           Boolean(ejecutandoAccionId) ||
+          Boolean(ejecutandoRutinaN3) ||
           analizandoDoc ||
           preparandoDoc ||
           (cargandoDiagnostico && !healthData)
@@ -804,11 +987,13 @@ export default function AdminPanel() {
             ? 'Cerrando sesión Admin...'
             : ejecutandoAccionId
               ? 'Ejecutando acción Nivel 2 autorizada...'
-              : preparandoDoc
-                ? 'Optimizando archivo para análisis...'
-                : analizandoDoc
-                  ? 'Analizando documento y cruzando con planillas...'
-                  : 'Ejecutando diagnóstico solo lectura...'
+              : ejecutandoRutinaN3
+                ? 'Ejecutando rutina supervisada Nivel 3...'
+                : preparandoDoc
+                  ? 'Optimizando archivo para análisis...'
+                  : analizandoDoc
+                    ? 'Analizando documento y cruzando con planillas...'
+                    : 'Ejecutando diagnóstico solo lectura...'
         }
       />
 
@@ -874,10 +1059,10 @@ export default function AdminPanel() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-[#E36414] block">
-                Etapa 5 — Nivel 1 (Consulta/OCR) + Nivel 2 (Aprobación Humana Obligatoria)
+                SISTEMA COMPLETO (ETAPAS 1 A 6) — GR CEREBRO CENTRAL DE IA OPERATIVO (NIVELES 1, 2 Y 3 SUPERVISADOS)
               </span>
-              <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug">
-                Chat Central, Validador Documental, Bandeja Nivel 2 y Supervisión ERP
+              <h2 className="text-sm sm:text-base font-black text-[#0F4C5C] leading-snug mt-0.5">
+                Chat Central, Validador Documental, Bandeja Nivel 2, Rutinas Nivel 3 y Gobernanza
               </h2>
               <p className="text-xs text-slate-700 mt-0.5">
                 {healthData?.checkedAtAR
@@ -1871,6 +2056,210 @@ export default function AdminPanel() {
           </div>
         </section>
 
+        {/* 0D. AUTOMATIZACIONES SUPERVISADAS — NIVEL 3 Y GOBERNANZA (ETAPA 6) */}
+        <section className="bg-white rounded-3xl shadow-sm border-2 border-[#0F4C5C]/25 overflow-hidden">
+          <div className="bg-[#0F4C5C] text-white px-4 sm:px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-white/15 border border-[#FBF8CC]/30 text-[#FBF8CC] flex items-center justify-center shrink-0">
+                <Power className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black leading-tight">
+                  Automatizaciones Supervisadas — Nivel 3 y Gobernanza
+                </h3>
+                <p className="text-[11px] text-petroleo-100">
+                  Interruptor Maestro de Seguridad, 3 rutinas preventivas auditadas y bloqueo permanente de Nivel 4
+                </p>
+              </div>
+            </div>
+
+            <span
+              className={`text-[11px] font-black px-3 py-1 rounded-full shrink-0 ${
+                configNivel3.NIVEL3_ACTIVO
+                  ? 'bg-emerald-400 text-emerald-950'
+                  : 'bg-[#FBF8CC] text-[#0F4C5C]'
+              }`}
+            >
+              {configNivel3.NIVEL3_ACTIVO ? 'Nivel 3 ACTIVO' : 'Nivel 3 PAUSADO'}
+            </span>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-5">
+            {/* Interruptor Maestro de Nivel 3 */}
+            <div
+              className={`rounded-2xl p-4 border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                configNivel3.NIVEL3_ACTIVO
+                  ? 'bg-emerald-50/70 border-emerald-300'
+                  : 'bg-slate-50 border-slate-300'
+              }`}
+            >
+              <div className="space-y-0.5">
+                <span className="text-[10px] font-black uppercase tracking-wider text-[#0F4C5C] block">
+                  Interruptor Maestro de Seguridad (NIVEL3_ACTIVO)
+                </span>
+                <p className="text-sm font-black text-slate-900">
+                  {configNivel3.NIVEL3_ACTIVO
+                    ? 'Automatizaciones Nivel 3 habilitadas (modo preventivo / solo lectura)'
+                    : 'Todas las automatizaciones Nivel 3 están pausadas por seguridad'}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Al pausar este interruptor, ninguna rutina programada ni manual de Nivel 3 puede ejecutarse.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={guardandoNivel3}
+                onClick={() => handleToggleConfigNivel3('NIVEL3_ACTIVO', !configNivel3.NIVEL3_ACTIVO)}
+                className={`px-4 py-3 rounded-2xl font-extrabold text-xs shadow-sm flex items-center justify-center gap-2 shrink-0 transition active:scale-95 disabled:opacity-60 ${
+                  configNivel3.NIVEL3_ACTIVO
+                    ? 'bg-red-600 hover:bg-red-700 text-white'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                <Power className="w-4 h-4" />
+                <span>
+                  {guardandoNivel3
+                    ? 'Guardando...'
+                    : configNivel3.NIVEL3_ACTIVO
+                      ? 'Pausar Nivel 3'
+                      : 'Activar Nivel 3'}
+                </span>
+              </button>
+            </div>
+
+            {avisoNivel3 && (
+              <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>{avisoNivel3}</span>
+              </div>
+            )}
+
+            {errorNivel3 && (
+              <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorNivel3}</span>
+              </div>
+            )}
+
+            {/* 3 Tarjetas individuales para rutinas supervisadas */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+              {RUTINAS_NIVEL3_DEF.map((rut) => {
+                const habilitada = Boolean(configNivel3[rut.propKey]);
+                const corriendo = ejecutandoRutinaN3 === rut.id;
+                const resultado = resultadosRutinasN3[rut.id];
+
+                return (
+                  <article
+                    key={rut.id}
+                    className={`rounded-2xl border p-4 flex flex-col justify-between gap-3 ${
+                      habilitada && configNivel3.NIVEL3_ACTIVO
+                        ? 'bg-white border-emerald-200'
+                        : 'bg-[#F8FAFC] border-slate-200'
+                    }`}
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <h4 className="text-sm font-black text-[#0F4C5C] leading-snug">
+                          {rut.titulo}
+                        </h4>
+                        <span
+                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border shrink-0 ${
+                            habilitada
+                              ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
+                              : 'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          {habilitada ? 'Activa' : 'Inactiva'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-snug">{rut.descripcion}</p>
+                    </div>
+
+                    <div className="space-y-2 pt-2 border-t border-slate-200/70">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={habilitada}
+                            disabled={guardandoNivel3}
+                            onChange={(e) => handleToggleConfigNivel3(rut.propKey, e.target.checked)}
+                            className="w-4 h-4 rounded accent-[#0F4C5C] cursor-pointer"
+                          />
+                          <span>Habilitar en Trigger</span>
+                        </label>
+
+                        <button
+                          type="button"
+                          disabled={!configNivel3.NIVEL3_ACTIVO || Boolean(ejecutandoRutinaN3)}
+                          onClick={() => handleEjecutarRutinaNivel3(rut.id)}
+                          title={
+                            configNivel3.NIVEL3_ACTIVO
+                              ? 'Ejecutar rutina ahora en modo preventivo'
+                              : 'Activá el Interruptor Maestro de Nivel 3 primero'
+                          }
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#E36414] hover:bg-ladrillo-dark disabled:opacity-45 text-white font-extrabold text-[11px] shadow-sm transition active:scale-95"
+                        >
+                          <Play className="w-3 h-3" />
+                          <span>{corriendo ? 'Corriendo...' : 'Ejecutar Ahora'}</span>
+                        </button>
+                      </div>
+
+                      {resultado && (
+                        <div
+                          className={`rounded-xl border p-3 text-[11px] space-y-1.5 ${
+                            resultado.estado === 'ALERTA'
+                              ? 'bg-amber-50 border-amber-200 text-amber-950'
+                              : 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1 font-black">
+                            <span>Informe ({resultado.estado})</span>
+                            <span className="font-mono text-[10px] opacity-80">
+                              {resultado.ejecutadoEn}
+                            </span>
+                          </div>
+                          <p className="font-bold leading-snug">{resultado.resumen}</p>
+                          {Array.isArray(resultado.hallazgos) && resultado.hallazgos.length > 0 && (
+                            <ul className="list-disc pl-4 space-y-0.5 text-[10px] leading-snug">
+                              {resultado.hallazgos.map((h, i) => (
+                                <li key={i}>{h}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            {/* Tarjeta de Gobernanza: Nivel 4 BLOQUEADO POR DISEÑO */}
+            <div className="rounded-2xl bg-slate-900 text-white border-2 border-red-500/70 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-red-600/20 border border-red-400/50 text-red-400 flex items-center justify-center shrink-0">
+                  <ShieldAlert className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="text-sm font-black tracking-tight text-white">
+                      Nivel 4 — Operaciones Fiscales Críticas: BLOQUEADO POR DISEÑO
+                    </h4>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase bg-red-600 text-white px-2.5 py-0.5 rounded-full">
+                      <Lock className="w-3 h-3" />
+                      <span>Bloqueo Permanente</span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    La emisión de facturas electrónicas, las presentaciones juradas ante ARCA / DGR y la generación de VEPs oficiales <strong>requieren intervención manual directa del contador</strong> y nunca se automatizan desde el Cerebro de IA.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {errorDiagnostico && (
           <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-800 flex items-start gap-2.5">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -2079,9 +2468,20 @@ export default function AdminPanel() {
                 </p>
               </div>
             </div>
-            <span className="text-[11px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-full">
-              {logsLista.length} registros
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-full">
+                {logsLista.length} recientes
+              </span>
+              <button
+                type="button"
+                disabled={exportandoCsv}
+                onClick={handleExportarBitacoraCsv}
+                className="inline-flex items-center gap-1.5 text-xs font-extrabold bg-[#0F4C5C] hover:bg-petroleo-dark disabled:opacity-50 text-white px-3.5 py-2 rounded-xl shadow-sm transition active:scale-95"
+              >
+                <Download className="w-3.5 h-3.5 text-[#FBF8CC]" />
+                <span>{exportandoCsv ? 'Exportando CSV...' : 'Exportar Bitácora (CSV)'}</span>
+              </button>
+            </div>
           </div>
 
           {logsLista.length === 0 ? (
