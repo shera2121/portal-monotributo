@@ -26,7 +26,7 @@ import {
   savePushSubscription,
   uploadReceipt
 } from './services/api.js';
-import { calcularEstadoMonotributo, formatCUIT } from './utils/fiscalCalculations.js';
+import { calcularEstadoMonotributo, cleanCUIT, formatCUIT } from './utils/fiscalCalculations.js';
 import {
   eliminarStorageSeguro,
   guardarJsonSeguro,
@@ -37,6 +37,7 @@ import CargarComprobanteTab from './components/CargarComprobanteTab.jsx';
 import FacturarTab from './components/FacturarTab.jsx';
 import HistorialTab from './components/HistorialTab.jsx';
 import InicioTab from './components/InicioTab.jsx';
+import LoadingOverlay from './components/LoadingOverlay.jsx';
 import LoginScreen from './components/LoginScreen.jsx';
 import SimuladorTab from './components/SimuladorTab.jsx';
 import PrivacyPolicyModal, {
@@ -52,6 +53,13 @@ import {
 } from './utils/biometricAuth.js';
 
 const SESSION_KEY = 'gr_portal_session_v2';
+
+function tieneCredencialesValidas(creds) {
+  if (!creds || typeof creds !== 'object') return false;
+  const cuitLimpio = cleanCUIT(creds.cuit);
+  const pinLimpio = String(creds.pin || '').trim();
+  return /^\d{11}$/.test(cuitLimpio) && pinLimpio.length > 0;
+}
 
 export default function App() {
   // Leer parámetros de enlace privado (?cuit=...&chat_id=...&exp=...&sig=...&k=...)
@@ -83,8 +91,26 @@ export default function App() {
 
   const modoDemo = estaEnModoDemo();
 
-  const [sesion, setSesion] = useState(() => leerJsonSeguro(SESSION_KEY, null));
+  const debeVerificarLinkFirmado = Boolean(
+    parametrosUrl.sigParam &&
+      parametrosUrl.expParam &&
+      /^\d{11}$/.test(parametrosUrl.cuitParam) &&
+      String(parametrosUrl.chatIdParam || '').trim()
+  );
+
+  const [sesion, setSesion] = useState(() => {
+    const guardada = leerJsonSeguro(SESSION_KEY, null);
+    if (tieneCredencialesValidas(guardada)) return guardada;
+    if (guardada) eliminarStorageSeguro(SESSION_KEY);
+    return null;
+  });
   const [portalData, setPortalData] = useState(null);
+  const [verificandoSesionInicial, setVerificandoSesionInicial] = useState(() => {
+    if (debeVerificarLinkFirmado) return true;
+    const tieneBiometriaActiva = Boolean(obtenerPerfilBiometrico());
+    const guardada = leerJsonSeguro(SESSION_KEY, null);
+    return !tieneBiometriaActiva && tieneCredencialesValidas(guardada);
+  });
   const [tabActiva, setTabActiva] = useState(() =>
     parametrosUrl.seccionParam === 'documentos' ? 'historial' : 'inicio'
   );
@@ -144,7 +170,25 @@ export default function App() {
     }, 4000);
   };
 
-  const cargarDatosCliente = async (credenciales, { silencioso = false } = {}) => {
+  const cargarDatosCliente = async (
+    credenciales,
+    { silencioso = false, esVerificacionInicial = false } = {}
+  ) => {
+    const esLinkFirmado = Boolean(
+      credenciales?.urlParams?.sigParam &&
+        credenciales?.urlParams?.expParam &&
+        /^\d{11}$/.test(cleanCUIT(credenciales?.urlParams?.cuitParam || credenciales?.cuit)) &&
+        String(credenciales?.urlParams?.chatIdParam || credenciales?.pin || '').trim()
+    );
+
+    if (!esLinkFirmado && !tieneCredencialesValidas(credenciales)) {
+      const msgValidacion =
+        'Ingresá un CUIT válido de exactamente 11 dígitos numéricos y un PIN de acceso no vacío.';
+      setErrorLogin(msgValidacion);
+      if (!silencioso && !esVerificacionInicial) mostrarToast(msgValidacion, 'error');
+      return false;
+    }
+
     if (!silencioso) setCargando(true);
     setErrorLogin('');
     try {
@@ -158,14 +202,32 @@ export default function App() {
             }
           : null);
 
+      const cuitNormalizado = cleanCUIT(
+        esLinkFirmado ? credenciales.urlParams.cuitParam || credenciales.cuit : credenciales.cuit
+      );
+      const pinNormalizado = String(
+        esLinkFirmado ? credenciales.urlParams.chatIdParam || credenciales.pin : credenciales.pin
+      ).trim();
+
       const data = await getPortalData({
         ...credenciales,
+        cuit: cuitNormalizado,
+        pin: pinNormalizado,
         consentimiento: consentimientoActual
       });
+
+      const cuitRespuesta = cleanCUIT(data?.cliente?.CUIT);
+      const pinRespuesta = String(
+        pinNormalizado || data?.cliente?.PIN || data?.cliente?.Chat_ID || ''
+      ).trim();
+      if (!/^\d{11}$/.test(cuitRespuesta) || !pinRespuesta) {
+        throw new Error('No se pudieron validar las credenciales del contribuyente.');
+      }
+
       setPortalData(data);
       const nuevaSesion = {
-        cuit: data.cliente.CUIT,
-        pin: credenciales.pin || data.cliente.PIN || data.cliente.Chat_ID
+        cuit: cuitRespuesta,
+        pin: pinRespuesta
       };
       setSesion(nuevaSesion);
       guardarJsonSeguro(SESSION_KEY, nuevaSesion);
@@ -173,7 +235,7 @@ export default function App() {
     } catch (err) {
       const msg = err?.message || 'No se pudo iniciar sesión. Revisá tus datos.';
       setErrorLogin(msg);
-      if (!silencioso) mostrarToast(msg, 'error');
+      if (!silencioso && !esVerificacionInicial) mostrarToast(msg, 'error');
       return false;
     } finally {
       if (!silencioso) setCargando(false);
@@ -227,23 +289,45 @@ export default function App() {
     mostrarToast('Se quitó el acceso rápido biométrico de este dispositivo.');
   };
 
-  // Auto-login al abrir la app:
-  // - Si el usuario tiene biometría activada en este dispositivo, NO hace auto-login silencioso
-  //   (exige pasar por huella / rostro / PIN del celular o ingresar CUIT + PIN manualmente).
+  // Verificación de sesión al abrir la app (sin destello de LoginScreen):
+  // - Si existe una sesión válida guardada en localStorage (y no hay bloqueo biométrico),
+  //   se valida contra el servidor mostrando LoadingOverlay ("Verificando sesión...").
+  // - Si la validación falla o no hay sesión válida, se limpia localStorage y recién ahí se muestra LoginScreen.
   useEffect(() => {
-    if (parametrosUrl.sigParam && parametrosUrl.chatIdParam) {
-      cargarDatosCliente({
-        cuit: parametrosUrl.cuitParam,
-        pin: parametrosUrl.chatIdParam,
-        urlParams: parametrosUrl
-      });
-      return;
-    }
+    let cancelado = false;
 
-    const tieneBiometriaActiva = Boolean(obtenerPerfilBiometrico());
-    if (!tieneBiometriaActiva && sesion?.cuit && sesion?.pin && !portalData) {
-      cargarDatosCliente(sesion);
-    }
+    const verificarSesionAlInicio = async () => {
+      if (debeVerificarLinkFirmado) {
+        await cargarDatosCliente(
+          {
+            cuit: parametrosUrl.cuitParam,
+            pin: parametrosUrl.chatIdParam,
+            urlParams: parametrosUrl
+          },
+          { esVerificacionInicial: true }
+        );
+        if (!cancelado) setVerificandoSesionInicial(false);
+        return;
+      }
+
+      const tieneBiometriaActiva = Boolean(obtenerPerfilBiometrico());
+      if (!tieneBiometriaActiva && tieneCredencialesValidas(sesion) && !portalData) {
+        const ok = await cargarDatosCliente(sesion, { esVerificacionInicial: true });
+        if (!ok) {
+          eliminarStorageSeguro(SESSION_KEY);
+          if (!cancelado) setSesion(null);
+        }
+        if (!cancelado) setVerificandoSesionInicial(false);
+        return;
+      }
+
+      if (!cancelado) setVerificandoSesionInicial(false);
+    };
+
+    verificarSesionAlInicio();
+    return () => {
+      cancelado = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -447,8 +531,12 @@ export default function App() {
         </div>
       )}
 
-      {/* PANTALLA DE LOGIN SI NO HAY CLIENTE ACTIVO */}
-      {!clienteActual ? (
+      {/* VERIFICACIÓN INICIAL DE SESIÓN (SIN DESTELLO DEL FORMULARIO DE LOGIN) */}
+      {verificandoSesionInicial ? (
+        <div className="min-h-screen bg-[#0F4C5C]">
+          <LoadingOverlay visible={true} message="Verificando sesión..." />
+        </div>
+      ) : !clienteActual ? (
         <LoginScreen
           onLogin={(creds) => cargarDatosCliente(creds)}
           cargando={cargando}

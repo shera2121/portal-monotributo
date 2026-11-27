@@ -13,6 +13,7 @@ import {
 import { DEMO_CREDENTIALS, ESTUDIO_INFO } from '../config.js';
 import { cleanCUIT, formatCUIT } from '../utils/fiscalCalculations.js';
 import InstallPwaBanner from './InstallPwaBanner.jsx';
+import LoadingOverlay from './LoadingOverlay.jsx';
 
 export default function LoginScreen({
   onLogin,
@@ -51,20 +52,27 @@ export default function LoginScreen({
     return true;
   };
 
+  const cuitLimpioActual = cleanCUIT(cuitVisual);
+  const pinLimpioActual = pin.trim();
+  const cuitEsValido = /^\d{11}$/.test(cuitLimpioActual);
+  const pinEsValido = pinLimpioActual.length > 0;
+  const estaProcesandoLogin = Boolean(cargando || verificandoBio);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (estaProcesandoLogin) return;
     setErrorLocal('');
     if (!validarConsentimiento()) return;
 
     const cuitLimpio = cleanCUIT(cuitVisual);
     const pinLimpio = pin.trim();
 
-    if (cuitLimpio.length !== 11) {
-      setErrorLocal('Ingresá un CUIT válido de 11 dígitos (ej: 20-34567890-4).');
+    if (!/^\d{11}$/.test(cuitLimpio)) {
+      setErrorLocal('Ingresá un CUIT válido de exactamente 11 dígitos numéricos (ej: 20-34567890-4).');
       return;
     }
-    if (pinLimpio.length < 4) {
-      setErrorLocal('Ingresá tu PIN DE ACCESO entregado por el estudio.');
+    if (!pinLimpio) {
+      setErrorLocal('Ingresá tu PIN DE ACCESO entregado por el estudio. No puede estar vacío.');
       return;
     }
 
@@ -72,6 +80,7 @@ export default function LoginScreen({
   };
 
   const handleIngresarDemo = async () => {
+    if (estaProcesandoLogin || !modoDemo) return;
     setErrorLocal('');
     if (!validarConsentimiento()) return;
     setCuitVisual(DEMO_CREDENTIALS.cuitFormateado);
@@ -80,6 +89,7 @@ export default function LoginScreen({
   };
 
   const handleClickBiometria = async () => {
+    if (estaProcesandoLogin) return;
     setErrorLocal('');
     setErrorBiometria('');
     if (!validarConsentimiento()) return;
@@ -101,6 +111,7 @@ export default function LoginScreen({
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col justify-between">
+      <LoadingOverlay visible={estaProcesandoLogin} message="Ingresando a tu portal..." />
       {/* Cabecera Institucional */}
       <div className="bg-petroleo text-white border-b-4 border-ladrillo px-4 pt-8 pb-12">
         <div className="max-w-md mx-auto text-center space-y-3">
@@ -314,10 +325,10 @@ export default function LoginScreen({
 
               <button
                 type="submit"
-                disabled={cargando || verificandoBio || !privacidadAceptada}
+                disabled={estaProcesandoLogin || !privacidadAceptada || !cuitEsValido || !pinEsValido}
                 className="w-full bg-ladrillo hover:bg-ladrillo-dark disabled:opacity-50 text-white font-extrabold text-sm py-4 rounded-2xl shadow-md transition active:scale-[0.99]"
               >
-                {cargando ? 'Verificando acceso...' : 'Ingresar a mi Portal'}
+                {estaProcesandoLogin ? 'Ingresando a tu portal...' : 'Ingresar a mi Portal'}
               </button>
             </form>
 

@@ -28,6 +28,7 @@ import {
 } from '../utils/fiscalCalculations.js';
 import { formatBytes, prepararArchivoComprobante } from '../utils/imageCompressor.js';
 import { parsearDictadoComprobante } from '../utils/voiceParser.js';
+import LoadingOverlay from './LoadingOverlay.jsx';
 import VoiceInputButton from './VoiceInputButton.jsx';
 
 const CLASIFICACIONES = [
@@ -384,8 +385,17 @@ export default function CargarComprobanteTab({
     tipoComprobante || tipoOperacion || cuitEmisor || cae || netoGravadoStr || iva21Str || iva105Str || otrosTributosStr
   );
 
+  const mensajeOverlayCarga = procesandoArchivo
+    ? 'Optimizando imagen...'
+    : analizandoIA
+      ? 'Analizando comprobante con IA...'
+      : enviando
+        ? 'Enviando comprobante al Estudio...'
+        : '';
+
   return (
     <div className="space-y-4">
+      <LoadingOverlay visible={Boolean(mensajeOverlayCarga)} message={mensajeOverlayCarga} />
       {/* TARJETA DE RESULTADO DE CONCILIACIÓN (SI EL SERVIDOR DEVUELVE resumenConciliacion) */}
       {resultadoConciliacion && (
         <section className="bg-white rounded-3xl shadow-md border-2 border-emerald-400 overflow-hidden">
@@ -609,9 +619,9 @@ export default function CargarComprobanteTab({
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  disabled={procesandoArchivo}
+                  disabled={procesandoArchivo || analizandoIA || enviando}
                   onClick={() => inputCamaraRef.current?.click()}
-                  className="py-5 px-3 rounded-2xl border-2 border-dashed border-ladrillo/60 bg-ladrillo-50/70 hover:bg-ladrillo-50 text-ladrillo-dark flex flex-col items-center justify-center gap-2 transition active:scale-[0.98]"
+                  className="py-5 px-3 rounded-2xl border-2 border-dashed border-ladrillo/60 bg-ladrillo-50/70 hover:bg-ladrillo-50 disabled:opacity-50 text-ladrillo-dark flex flex-col items-center justify-center gap-2 transition active:scale-[0.98]"
                 >
                   <div className="w-11 h-11 rounded-2xl bg-ladrillo text-white flex items-center justify-center shadow-sm">
                     <Camera className="w-5 h-5" />
@@ -622,9 +632,9 @@ export default function CargarComprobanteTab({
 
                 <button
                   type="button"
-                  disabled={procesandoArchivo}
+                  disabled={procesandoArchivo || analizandoIA || enviando}
                   onClick={() => inputGaleriaRef.current?.click()}
-                  className="py-5 px-3 rounded-2xl border-2 border-dashed border-petroleo/40 bg-petroleo-50/60 hover:bg-petroleo-50 text-petroleo flex flex-col items-center justify-center gap-2 transition active:scale-[0.98]"
+                  className="py-5 px-3 rounded-2xl border-2 border-dashed border-petroleo/40 bg-petroleo-50/60 hover:bg-petroleo-50 disabled:opacity-50 text-petroleo flex flex-col items-center justify-center gap-2 transition active:scale-[0.98]"
                 >
                   <div className="w-11 h-11 rounded-2xl bg-petroleo text-white flex items-center justify-center shadow-sm">
                     <ImagePlus className="w-5 h-5" />

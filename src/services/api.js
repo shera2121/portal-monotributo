@@ -318,6 +318,15 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
           : data.solicitudVepPendiente
     };
     const cli = normalizarCliente(clienteConModalidad);
+    const cuitBuscadoNorm = cleanCUIT(cuitBuscado);
+    const cuitClienteNorm = cleanCUIT(cli.CUIT);
+    if (!/^\d{11}$/.test(cuitClienteNorm)) {
+      return null;
+    }
+    if (/^\d{11}$/.test(cuitBuscadoNorm) && cuitClienteNorm !== cuitBuscadoNorm) {
+      return null;
+    }
+
     const resumen = data.resumen12Meses || {
       ventasAcumuladas: cli.Total_Ventas_Facturadas,
       comprasGastosAcumulados: cli.Total_Compras_Gastos,
@@ -372,12 +381,24 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
     const cuitNorm = cleanCUIT(cuitBuscado);
     const pinNorm = String(pinBuscado || '').trim().toLowerCase();
 
-    const encontrado =
-      limpios.find((c) => {
-        const matchCuit = cuitNorm && cleanCUIT(c.CUIT) === cuitNorm;
-        const matchPin = pinNorm && String(c.Chat_ID || '').trim().toLowerCase() === pinNorm;
-        return (matchCuit && matchPin) || matchPin || matchCuit;
-      }) || limpios[0];
+    // Seguridad estricta: exigir CUIT de 11 dígitos, PIN no vacío y coincidencia exacta de ambos
+    if (!/^\d{11}$/.test(cuitNorm) || !pinNorm) {
+      return null;
+    }
+
+    const encontrado = limpios.find((c) => {
+      const matchCuit = cleanCUIT(c.CUIT) === cuitNorm;
+      const chatIdNorm = String(c.Chat_ID || '').trim().toLowerCase();
+      const pinCliNorm = String(c.PIN || '').trim().toLowerCase();
+      const matchPin =
+        (chatIdNorm && chatIdNorm !== 's/d' && chatIdNorm === pinNorm) ||
+        (pinCliNorm && pinCliNorm !== 's/d' && pinCliNorm === pinNorm);
+      return matchCuit && matchPin;
+    });
+
+    if (!encontrado) {
+      return null;
+    }
 
     return {
       cliente: encontrado,
@@ -405,18 +426,34 @@ function normalizarRespuestaPortal(data, cuitBuscado = '', pinBuscado = '') {
 export async function getPortalData({ cuit, pin, urlParams = null, urlManual = null, consentimiento = null }) {
   const cuitLimpio = cleanCUIT(cuit);
   const pinLimpio = String(pin || '').trim();
+  const esLinkFirmado = Boolean(urlParams?.sigParam && urlParams?.chatIdParam && urlParams?.expParam);
 
-  // MODO DEMO
+  // Validación estricta antes de consultar el backend o modo demo:
+  // NUNCA permitir CUIT distinto de 11 dígitos numéricos ni PIN vacío o solo espacios.
+  if (!esLinkFirmado) {
+    if (!/^\d{11}$/.test(cuitLimpio)) {
+      throw new Error('Ingresá un CUIT válido de exactamente 11 dígitos numéricos.');
+    }
+    if (!pinLimpio) {
+      throw new Error('Ingresá tu PIN o clave de acceso. No puede estar vacío.');
+    }
+  } else {
+    const cuitLink = cleanCUIT(urlParams.cuitParam || cuitLimpio);
+    const pinLink = String(urlParams.chatIdParam || '').trim();
+    if (!/^\d{11}$/.test(cuitLink) || !pinLink) {
+      throw new Error('El enlace privado no contiene un CUIT y PIN válidos.');
+    }
+  }
+
+  // MODO DEMO (solo cuando USE_MOCK_DATA está habilitado explícitamente; nunca como fallback)
   if (estaEnModoDemo()) {
     await esperar(320);
     const db = obtenerDbDemo();
 
-    // En modo demo validamos longitud mínima o aceptamos credenciales demo
-    const esDemo =
-      (cuitLimpio === DEMO_CREDENTIALS.cuit && pinLimpio === DEMO_CREDENTIALS.pin) ||
-      (cuitLimpio.length === 11 && pinLimpio.length >= 4);
+    const esDemoValido =
+      cuitLimpio === DEMO_CREDENTIALS.cuit && pinLimpio === DEMO_CREDENTIALS.pin;
 
-    if (!esDemo) {
+    if (!esDemoValido) {
       throw new Error(
         `Credenciales inválidas. En modo demo ingresá CUIT ${DEMO_CREDENTIALS.cuitFormateado} y PIN ${DEMO_CREDENTIALS.pin}.`
       );
