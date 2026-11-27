@@ -18,8 +18,13 @@
  */
 
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
-const DEFAULT_FALLBACK_MODELS = ['gemini-3.8-flash-lite', 'gemini-3.5-flash'];
-const RETRY_DELAY_MS = 1200;
+const DEFAULT_FALLBACK_MODELS = [
+  'gemini-3.8-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-3.8-pro',
+  'gemini-2.0-flash'
+];
+const RETRY_DELAY_MS = 800;
 const MAX_TOOL_ROUNDS = 5;
 
 function obtenerModeloGemini() {
@@ -203,33 +208,56 @@ async function llamarGeminiUnaVez(geminiApiKey, geminiModel, contents) {
 }
 
 /**
- * Llama a Gemini con resiliencia ante sobrecarga (503 / high demand / 429):
- * 1) Intenta con el modelo principal.
- * 2) Si falla por sobrecarga (503/429/high demand), espera 1200 ms y reintenta el modelo principal.
- * 3) Si vuelve a fallar por sobrecarga, hace fallback automático a modelos alternativos vigentes.
+ * Llama a Gemini recorriendo la cadena ordenada de modelos con resiliencia ante
+ * sobrecarga (503 / high demand / 429) o indisponibilidad (404):
+ * Orden por defecto:
+ *   1) process.env.GEMINI_MODEL || "gemini-3.8-flash"
+ *   2) "gemini-3.8-flash-lite"
+ *   3) "gemini-2.5-flash-lite"
+ *   4) "gemini-3.8-pro"
+ *   5) "gemini-2.0-flash"
+ * Entre cada intento fallido por 503/429 espera 800 ms antes de probar el siguiente.
  */
 async function llamarGeminiConResiliencia(geminiApiKey, modeloPrincipal, contents) {
+  const modelosRespaldo = obtenerModelosRespaldo(modeloPrincipal);
+  const cadenaModelos = [modeloPrincipal, ...modelosRespaldo];
+  const intentosFallidos = [];
   let ultimoError = null;
-  let huboSobrecargaPrincipal = false;
+  let motivoPrincipal = 'alta demanda / límite de tasa';
 
-  // Intento 1 + Reintento automático (espera 1200 ms) sobre el modelo principal
-  for (let intento = 1; intento <= 2; intento++) {
+  for (let i = 0; i < cadenaModelos.length; i++) {
+    const modeloActual = cadenaModelos[i];
+    const esPrincipal = i === 0;
+    const haySiguiente = i < cadenaModelos.length - 1;
+
     try {
-      const data = await llamarGeminiUnaVez(geminiApiKey, modeloPrincipal, contents);
+      const data = await llamarGeminiUnaVez(geminiApiKey, modeloActual, contents);
       return {
         data,
-        modelUsed: modeloPrincipal,
-        usedFallback: false,
-        retriedPrimary: intento > 1
+        modelUsed: modeloActual,
+        usedFallback: !esPrincipal,
+        fallbackReason: !esPrincipal ? motivoPrincipal : '',
+        failedAttempts: intentosFallidos
       };
     } catch (err) {
       ultimoError = err;
       const sobrecarga = esErrorSobrecarga(err.httpStatus, err.message);
       const noDisponible = esErrorModeloNoDisponible(err.httpStatus, err.message);
 
+      intentosFallidos.push({
+        model: modeloActual,
+        status: err.httpStatus || null,
+        error: err.message
+      });
+
+      if (esPrincipal) {
+        motivoPrincipal = sobrecarga
+          ? 'alta demanda / límite de tasa'
+          : 'modelo principal no disponible';
+      }
+
       if (sobrecarga) {
-        huboSobrecargaPrincipal = true;
-        if (intento === 1) {
+        if (haySiguiente) {
           await esperar(RETRY_DELAY_MS);
           continue;
         }
@@ -237,41 +265,64 @@ async function llamarGeminiConResiliencia(geminiApiKey, modeloPrincipal, content
       }
 
       if (noDisponible) {
+        if (haySiguiente) {
+          continue;
+        }
         break;
       }
 
-      // Error no recuperable (ej. API key inválida 400/401/403): no ocultar con fallback
-      throw new Error(`Error en Gemini API (${modeloPrincipal}): ${err.message}`);
-    }
-  }
-
-  // Fallback automático a modelos alternativos vigentes
-  const modelosRespaldo = obtenerModelosRespaldo(modeloPrincipal);
-  for (const modeloAlt of modelosRespaldo) {
-    try {
-      const data = await llamarGeminiUnaVez(geminiApiKey, modeloAlt, contents);
-      return {
-        data,
-        modelUsed: modeloAlt,
-        usedFallback: true,
-        retriedPrimary: false,
-        fallbackReason: huboSobrecargaPrincipal ? 'alta demanda / límite de tasa' : 'modelo principal no disponible'
-      };
-    } catch (errAlt) {
-      ultimoError = errAlt;
-      if (
-        esErrorSobrecarga(errAlt.httpStatus, errAlt.message) ||
-        esErrorModeloNoDisponible(errAlt.httpStatus, errAlt.message)
-      ) {
-        continue;
-      }
-      throw new Error(`Error en Gemini API (${modeloAlt}): ${errAlt.message}`);
+      // Error no recuperable (ej. API key inválida 400/401/403): devolver inmediatamente
+      throw new Error(`Error en Gemini API (${modeloActual}): ${err.message}`);
     }
   }
 
   throw new Error(
-    `Los modelos de Gemini (${[modeloPrincipal, ...modelosRespaldo].join(', ')}) están momentáneamente con alta demanda o saturados. Intentá nuevamente en unos segundos. Detalle: ${ultimoError?.message || '503/429'}`
+    `Los modelos de Gemini (${cadenaModelos.join(' → ')}) no pudieron responder por alta demanda o indisponibilidad. Intentá nuevamente en unos segundos. Último detalle: ${ultimoError?.message || '503/429'}`
   );
+}
+
+async function listarModelosDisponiblesGemini(geminiApiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`;
+  const resp = await fetch(url, { method: 'GET' });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const detalle = data?.error?.message || `HTTP ${resp.status}`;
+    throw new Error(`Error consultando modelos en Gemini API: ${detalle}`);
+  }
+
+  const listaCruda = Array.isArray(data?.models) ? data.models : [];
+  const models = listaCruda.map((m) => {
+    const name = String(m?.name || '');
+    return {
+      id: name.replace(/^models\//, ''),
+      name,
+      displayName: String(m?.displayName || ''),
+      description: String(m?.description || ''),
+      supportedGenerationMethods: Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : [],
+      inputTokenLimit: m?.inputTokenLimit ?? null,
+      outputTokenLimit: m?.outputTokenLimit ?? null
+    };
+  });
+
+  const generateContentModels = models
+    .filter((m) => m.supportedGenerationMethods.includes('generateContent'))
+    .map((m) => m.id);
+
+  const modeloPrincipal = obtenerModeloGemini();
+  const cadenaConfigurada = [modeloPrincipal, ...obtenerModelosRespaldo(modeloPrincipal)];
+
+  return {
+    ok: true,
+    action: 'list_models',
+    configuredPrimary: modeloPrincipal,
+    configuredChain: cadenaConfigurada,
+    totalModels: models.length,
+    generateContentCount: generateContentModels.length,
+    generateContentModels,
+    models
+  };
 }
 
 function normalizarHistorialParaGemini(historyRaw) {
@@ -326,6 +377,7 @@ export default async function handler(req, res) {
   }
   body = body || {};
 
+  const action = String(body.action || '').trim().toLowerCase();
   const message = String(body.message || '').trim();
   const sessionToken = String(body.sessionToken || '').trim();
   const history = Array.isArray(body.history) ? body.history : [];
@@ -333,7 +385,7 @@ export default async function handler(req, res) {
   if (!sessionToken) {
     return res.status(401).json({ ok: false, error: 'Sesión expirada' });
   }
-  if (!message) {
+  if (action !== 'list_models' && !message) {
     return res.status(400).json({ ok: false, error: 'Escribí una consulta antes de enviar.' });
   }
 
@@ -352,7 +404,20 @@ export default async function handler(req, res) {
     });
   }
 
-  // 4. Bucle de conversación con Gemini 3.8 Flash (con retry 1200ms + fallback automático) + Function Calling (Nivel 1)
+  // 3B. Modo diagnóstico autenticado: listar modelos disponibles para la GEMINI_API_KEY actual
+  if (action === 'list_models') {
+    try {
+      const diagnosticoModelos = await listarModelosDisponiblesGemini(geminiApiKey);
+      return res.status(200).json(diagnosticoModelos);
+    } catch (errList) {
+      return res.status(502).json({
+        ok: false,
+        error: errList?.message || 'No se pudo consultar el catálogo de modelos de Gemini.'
+      });
+    }
+  }
+
+  // 4. Bucle de conversación con cadena de fallback Gemini (espera 800 ms entre 503/429) + Function Calling (Nivel 1)
   const geminiModel = obtenerModeloGemini();
   let ultimoModeloUsado = geminiModel;
   let usoRespaldo = false;
