@@ -23,6 +23,8 @@ import {
   generarPdfComprobante,
   generarPdfConstancia
 } from '../utils/documentHelpers.js';
+import { leerDisenoCliente } from '../utils/marcaDiseno.js';
+import { generarComprobantePDF } from '../utils/pdfComprobante.js';
 
 const FILTROS_TIPO_DOCUMENTO = ['Todos', 'VEP', 'Constancia', 'Factura / NC'];
 
@@ -194,36 +196,115 @@ export default function HistorialTab({
     };
   };
 
-  const handleDescargarPdf = (item) => {
+  const handleDescargarPdf = async (item) => {
+    const tipoSolapa = item._solapa || solapa;
+    if (tipoSolapa === 'ventas') {
+      try {
+        const diseno = leerDisenoCliente(cliente?.CUIT, cliente);
+        const { blob, filename } = await generarComprobantePDF({
+          tipo: 'FACTURA',
+          cliente,
+          receptor: {
+            nombre: item.receptorNombre || item.receptorTipo || 'Consumidor Final',
+            documento: item.receptorDocumento || ''
+          },
+          items: [
+            {
+              descripcion: item.descripcion || item.tipoComprobante || 'Servicios profesionales',
+              cantidad: 1,
+              precioUnitario: Number(item.importe) || 0
+            }
+          ],
+          observaciones: item.observacion || '',
+          arcaData: {
+            tipoComprobante: item.tipoComprobante || 'Factura C',
+            numeroComprobante: item.numeroComprobante || '0001-00000001',
+            fecha: item.fecha,
+            fechaDesde: item.fechaDesde || '',
+            fechaHasta: item.fechaHasta || '',
+            condicionVenta: item.condicionVenta || '',
+            cae: item.cae || '',
+            vtoCae: item.vtoCae || item.caeVto || ''
+          },
+          diseno
+        });
+        descargarBlob(blob, filename);
+        onToast('Factura PDF descargada con tu diseño de marca.');
+        return;
+      } catch {
+        // Fallback al enlace externo o PDF liviano
+      }
+    }
     if (item.archivoUrl && item.archivoUrl.startsWith('http')) {
       window.open(item.archivoUrl, '_blank', 'noopener,noreferrer');
       return;
     }
-    const blob = generarPdfComprobante(item, solapa, cliente);
-    const nombre = `${solapa === 'ventas' ? 'Venta' : 'Compra'}_${item.numeroComprobante || item.id}.pdf`.replace(/\s+/g, '_');
+    const blob = generarPdfComprobante(item, tipoSolapa, cliente);
+    const nombre = `${tipoSolapa === 'ventas' ? 'Venta' : 'Compra'}_${item.numeroComprobante || item.id}.pdf`.replace(/\s+/g, '_');
     descargarBlob(blob, nombre);
     onToast('PDF descargado.');
   };
 
   const handleCompartir = async (item) => {
+    const tipoSolapa = item._solapa || solapa;
     const titulo =
-      solapa === 'ventas'
+      tipoSolapa === 'ventas'
         ? `${item.tipoComprobante} ${item.numeroComprobante || ''}`.trim()
         : `Comprobante ${item.proveedor}`;
     const texto = `${titulo} • Fecha: ${formatFechaAR(item.fecha)} • Importe: ${formatARS(item.importe)}${
       item.cae ? ` • CAE: ${item.cae}` : ''
     }`;
-    const blob =
-      item.archivoUrl && item.archivoUrl.startsWith('http')
-        ? null
-        : generarPdfComprobante(item, solapa, cliente);
+
+    let blob = null;
+    let nombreArchivo = `${titulo.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`;
+    if (tipoSolapa === 'ventas') {
+      try {
+        const diseno = leerDisenoCliente(cliente?.CUIT, cliente);
+        const resPdf = await generarComprobantePDF({
+          tipo: 'FACTURA',
+          cliente,
+          receptor: {
+            nombre: item.receptorNombre || item.receptorTipo || 'Consumidor Final',
+            documento: item.receptorDocumento || ''
+          },
+          items: [
+            {
+              descripcion: item.descripcion || item.tipoComprobante || 'Servicios profesionales',
+              cantidad: 1,
+              precioUnitario: Number(item.importe) || 0
+            }
+          ],
+          observaciones: item.observacion || '',
+          arcaData: {
+            tipoComprobante: item.tipoComprobante || 'Factura C',
+            numeroComprobante: item.numeroComprobante || '0001-00000001',
+            fecha: item.fecha,
+            fechaDesde: item.fechaDesde || '',
+            fechaHasta: item.fechaHasta || '',
+            condicionVenta: item.condicionVenta || '',
+            cae: item.cae || '',
+            vtoCae: item.vtoCae || item.caeVto || ''
+          },
+          diseno
+        });
+        blob = resPdf.blob;
+        nombreArchivo = resPdf.filename;
+      } catch {
+        blob = generarPdfComprobante(item, tipoSolapa, cliente);
+      }
+    } else if (!(item.archivoUrl && item.archivoUrl.startsWith('http'))) {
+      blob = generarPdfComprobante(item, tipoSolapa, cliente);
+    }
 
     const res = await compartirDocumento({
       titulo,
       texto,
-      url: item.archivoUrl && item.archivoUrl.startsWith('http') ? item.archivoUrl : undefined,
+      url:
+        tipoSolapa !== 'ventas' && item.archivoUrl && item.archivoUrl.startsWith('http')
+          ? item.archivoUrl
+          : undefined,
       blob,
-      nombreArchivo: `${titulo.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`
+      nombreArchivo
     });
     if (res.shared) {
       onToast(

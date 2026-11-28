@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -7,7 +7,10 @@ import {
   FileCheck2,
   FileMinus2,
   FilePlus2,
+  FileSpreadsheet,
   Fingerprint,
+  Palette,
+  Receipt,
   Share2,
   ShieldCheck,
   X,
@@ -15,11 +18,7 @@ import {
 } from 'lucide-react';
 import { ARCA_DIRECT_MODE, TOPE_CONSUMIDOR_FINAL } from '../config.js';
 import { verificarBiometriaParaEmision } from '../utils/biometricAuth.js';
-import {
-  compartirDocumento,
-  descargarBlob,
-  generarPdfComprobante
-} from '../utils/documentHelpers.js';
+import { compartirDocumento, descargarBlob } from '../utils/documentHelpers.js';
 import {
   formatARS,
   formatFechaAR,
@@ -27,7 +26,14 @@ import {
   getRangoMesActual,
   parseMontoSeguro
 } from '../utils/fiscalCalculations.js';
+import {
+  guardarDisenoCliente,
+  leerDisenoCliente
+} from '../utils/marcaDiseno.js';
+import { generarComprobantePDF } from '../utils/pdfComprobante.js';
 import { parsearDictadoFactura } from '../utils/voiceParser.js';
+import MarcaDisenoModal from './MarcaDisenoModal.jsx';
+import PresupuestosPanel from './PresupuestosPanel.jsx';
 import VoiceInputButton from './VoiceInputButton.jsx';
 
 const CONDICIONES_VENTA = [
@@ -65,6 +71,16 @@ export default function FacturarTab({
       )
   );
 
+  const [modoSeccion, setModoSeccion] = useState('factura'); // 'factura' | 'presupuesto'
+  const [disenoMarca, setDisenoMarca] = useState(() =>
+    leerDisenoCliente(cliente?.CUIT, cliente)
+  );
+  const [modalDisenoAbierto, setModalDisenoAbierto] = useState(false);
+
+  useEffect(() => {
+    setDisenoMarca(leerDisenoCliente(cliente?.CUIT, cliente));
+  }, [cliente?.CUIT]);
+
   const [tipoComprobante, setTipoComprobante] = useState('Factura C');
   const [facturaAsociada, setFacturaAsociada] = useState('');
   const [concepto, setConcepto] = useState('Servicios');
@@ -77,12 +93,57 @@ export default function FacturarTab({
   const [condicionVenta, setCondicionVenta] = useState('Transferencia / Mercado Pago');
   const [descripcion, setDescripcion] = useState('');
   const [importeStr, setImporteStr] = useState('');
+  const [avisoPresupuestoConvertido, setAvisoPresupuestoConvertido] = useState('');
   const [errorForm, setErrorForm] = useState('');
   const [avisoVoz, setAvisoVoz] = useState('');
   const [modalConfirmacion, setModalConfirmacion] = useState(false);
   const [errorModal, setErrorModal] = useState('');
   const [verificandoBio, setVerificandoBio] = useState(false);
   const [enviando, setEnviando] = useState(false);
+
+  const handleGuardarDiseno = (nuevoDiseno) => {
+    const guardado = guardarDisenoCliente(cliente?.CUIT, nuevoDiseno);
+    setDisenoMarca(guardado);
+    onToast?.('¡Diseño de Mi Marca guardado! Se aplicará a tus Presupuestos y Facturas en PDF.');
+  };
+
+  const handleConvertirPresupuestoAFactura = (pres) => {
+    if (!pres) return;
+    setTipoComprobante('Factura C');
+    setFacturaAsociada('');
+    setFecha(getHoyISO());
+
+    const docLimpio = String(pres.receptor?.documento || '').replace(/\D/g, '');
+    if (docLimpio.length >= 7) {
+      setReceptorTipo('CUIT / DNI específico');
+      setReceptorDocumento(docLimpio);
+      setReceptorNombre(pres.receptor?.nombre || '');
+    } else if (Number(pres.total) >= TOPE_CONSUMIDOR_FINAL) {
+      setReceptorTipo('CUIT / DNI específico');
+      setReceptorDocumento('');
+      setReceptorNombre(pres.receptor?.nombre || '');
+    } else {
+      setReceptorTipo('Consumidor Final');
+      setReceptorDocumento('');
+      setReceptorNombre(pres.receptor?.nombre || '');
+    }
+
+    const detalleItems = (pres.items || [])
+      .map((it) => {
+        const cantTxt = Number(it.cantidad) > 1 ? `${it.cantidad}x ` : '';
+        return `${cantTxt}${it.descripcion}`;
+      })
+      .join(' + ');
+
+    setDescripcion(detalleItems || `Según Presupuesto ${pres.numero}`);
+    setImporteStr(String(pres.total || ''));
+    setErrorForm('');
+    setAvisoPresupuestoConvertido(
+      `Datos cargados desde Presupuesto ${pres.numero} (${pres.receptor?.nombre || 'Cliente'}). Revisá y emití la factura oficial en 1 paso.`
+    );
+    setModoSeccion('factura');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const handleDictadoFactura = (transcript) => {
     const parsed = parsearDictadoFactura(transcript);
@@ -146,41 +207,73 @@ export default function FacturarTab({
     setModalConfirmacion(true);
   };
 
-  const handleVerDescargarPdfVenta = (v) => {
-    const pdfUrl = obtenerUrlPdfVenta(v);
-    if (pdfUrl && !pdfUrl.includes('/demo-')) {
-      window.open(pdfUrl, '_blank', 'noopener,noreferrer');
-      onToast?.('Abriendo PDF del comprobante...');
-      return;
+  const generarPdfBrandedFactura = async (v) => {
+    return generarComprobantePDF({
+      tipo: 'FACTURA',
+      cliente,
+      receptor: {
+        nombre: v.receptorNombre || v.receptorTipo || 'Consumidor Final',
+        documento: v.receptorDocumento || ''
+      },
+      items: [
+        {
+          descripcion: v.descripcion || v.tipoComprobante || 'Servicios profesionales',
+          cantidad: 1,
+          precioUnitario: Number(v.importe) || 0
+        }
+      ],
+      observaciones: v.observacion || '',
+      arcaData: {
+        tipoComprobante: v.tipoComprobante || 'Factura C',
+        numeroComprobante: v.numeroComprobante || '0001-00000001',
+        fecha: v.fecha || getHoyISO(),
+        fechaDesde: v.fechaDesde || '',
+        fechaHasta: v.fechaHasta || '',
+        condicionVenta: v.condicionVenta || '',
+        cae: v.cae || '',
+        vtoCae: v.vtoCae || v.caeVto || ''
+      },
+      diseno: disenoMarca
+    });
+  };
+
+  const handleVerDescargarPdfVenta = async (v) => {
+    try {
+      const { blob, filename } = await generarPdfBrandedFactura(v);
+      descargarBlob(blob, filename);
+      onToast?.('Factura PDF generada con tu diseño de marca.');
+    } catch {
+      const pdfUrl = obtenerUrlPdfVenta(v);
+      if (pdfUrl && !pdfUrl.includes('/demo-')) {
+        window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+        onToast?.('Abriendo PDF del comprobante...');
+      }
     }
-    const blob = generarPdfComprobante(v, 'ventas', cliente);
-    const nombre = `${String(v.tipoComprobante || 'Factura_C').replace(/\s+/g, '_')}_${v.numeroComprobante || v.id}.pdf`;
-    descargarBlob(blob, nombre);
-    onToast?.('PDF del comprobante descargado.');
   };
 
   const handleCompartirPdfVenta = async (v) => {
-    const pdfUrl = obtenerUrlPdfVenta(v);
-    const esUrlReal = Boolean(pdfUrl && !pdfUrl.includes('/demo-'));
-    const blob = esUrlReal ? null : generarPdfComprobante(v, 'ventas', cliente);
-    const titulo = `${v.tipoComprobante || 'Factura C'} ${v.numeroComprobante || ''}`.trim();
-    const texto = `${titulo} • Fecha: ${formatFechaAR(v.fecha)} • Importe: ${formatARS(v.importe)}${v.cae ? ` • CAE: ${v.cae}` : ''}`;
+    try {
+      const { blob, filename } = await generarPdfBrandedFactura(v);
+      const titulo = `${v.tipoComprobante || 'Factura C'} ${v.numeroComprobante || ''}`.trim();
+      const texto = `${titulo} • Fecha: ${formatFechaAR(v.fecha)} • Importe: ${formatARS(v.importe)}${v.cae ? ` • CAE: ${v.cae}` : ''}`;
 
-    const res = await compartirDocumento({
-      titulo,
-      texto,
-      url: esUrlReal ? pdfUrl : undefined,
-      blob,
-      nombreArchivo: `${titulo.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`
-    });
-    if (res.shared) {
-      onToast?.(
-        res.method === 'clipboard-fallback'
-          ? 'Enlace del PDF copiado para compartir.'
-          : res.method === 'download-fallback'
-            ? 'PDF descargado para compartir.'
-            : 'Comprobante listo para compartir.'
-      );
+      const res = await compartirDocumento({
+        titulo,
+        texto,
+        blob,
+        nombreArchivo: filename
+      });
+      if (res.shared) {
+        onToast?.(
+          res.method === 'clipboard-fallback'
+            ? 'Enlace del PDF copiado para compartir.'
+            : res.method === 'download-fallback'
+              ? 'PDF descargado para compartir.'
+              : 'Comprobante listo para compartir.'
+        );
+      }
+    } catch (err) {
+      onToast?.(err?.message || 'No se pudo compartir la factura en PDF.', 'error');
     }
   };
 
@@ -268,26 +361,101 @@ export default function FacturarTab({
 
   return (
     <div className="space-y-4">
-      {/* Cabecera */}
-      <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="text-lg font-black text-petroleo leading-tight">
-              {esModoAutomatico ? 'Emitir Comprobante ARCA' : 'Solicitar Comprobante'}
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {esModoAutomatico
-                ? 'Modo Automático activo: te pediremos tu huella o PIN biométrico antes de emitir.'
-                : 'Tu solicitud ingresa al estudio para revisión y emisión segura en ARCA.'}
-            </p>
-          </div>
-          {esModoAutomatico && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-emerald-100 text-emerald-900 border border-emerald-300 px-2.5 py-1 rounded-full shrink-0">
-              <Zap className="w-3 h-3" />
-              Automático
-            </span>
-          )}
+      {/* Selector superior: Nueva Factura ARCA | Nuevo Presupuesto + Mi Marca y Diseño */}
+      <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-3.5 space-y-3">
+        <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+          <button
+            type="button"
+            onClick={() => setModoSeccion('factura')}
+            className={`py-2.5 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition ${
+              modoSeccion === 'factura'
+                ? 'bg-petroleo text-white shadow-sm'
+                : 'text-slate-600 hover:text-petroleo'
+            }`}
+          >
+            <Receipt className="w-4 h-4 shrink-0" />
+            <span>Nueva Factura ARCA</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setModoSeccion('presupuesto')}
+            className={`py-2.5 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition ${
+              modoSeccion === 'presupuesto'
+                ? 'bg-ladrillo text-white shadow-sm'
+                : 'text-slate-600 hover:text-ladrillo'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4 shrink-0" />
+            <span>Nuevo Presupuesto</span>
+          </button>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setModalDisenoAbierto(true)}
+          className="w-full py-2.5 px-3.5 rounded-2xl bg-hueso/80 hover:bg-hueso border border-hueso-border text-petroleo font-extrabold text-xs flex items-center justify-between gap-2 transition"
+        >
+          <span className="inline-flex items-center gap-2 min-w-0">
+            <Palette className="w-4 h-4 text-ladrillo shrink-0" />
+            <span className="truncate">
+              Mi Marca y Diseño ({disenoMarca.estilo} •{' '}
+              {disenoMarca.logoDataUrl ? 'con logo' : 'sin logo'})
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 shrink-0">
+            <span
+              className="w-4 h-4 rounded-full border border-black/15"
+              style={{ backgroundColor: disenoMarca.colorPrincipal }}
+            />
+            <span className="text-[11px] underline">Personalizar</span>
+          </span>
+        </button>
+      </section>
+
+      {modoSeccion === 'presupuesto' ? (
+        <PresupuestosPanel
+          cliente={cliente}
+          diseno={disenoMarca}
+          onAbrirDiseno={() => setModalDisenoAbierto(true)}
+          onConvertirAFactura={handleConvertirPresupuestoAFactura}
+          onToast={onToast}
+        />
+      ) : (
+        <>
+          {/* Cabecera Factura ARCA */}
+          <section className="bg-white rounded-3xl shadow-sm border border-slate-200/80 p-4 sm:p-5 space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-black text-petroleo leading-tight">
+                  {esModoAutomatico ? 'Emitir Comprobante ARCA' : 'Solicitar Comprobante'}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {esModoAutomatico
+                    ? 'Modo Automático activo: te pediremos tu huella o PIN biométrico antes de emitir.'
+                    : 'Tu solicitud ingresa al estudio para revisión y emisión segura en ARCA.'}
+                </p>
+              </div>
+              {esModoAutomatico && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-emerald-100 text-emerald-900 border border-emerald-300 px-2.5 py-1 rounded-full shrink-0">
+                  <Zap className="w-3 h-3" />
+                  Automático
+                </span>
+              )}
+            </div>
+
+            {avisoPresupuestoConvertido && (
+              <div className="p-3 rounded-2xl bg-petroleo-50 border border-petroleo/25 text-xs font-bold text-petroleo flex items-start justify-between gap-2">
+                <span>{avisoPresupuestoConvertido}</span>
+                <button
+                  type="button"
+                  onClick={() => setAvisoPresupuestoConvertido('')}
+                  className="text-petroleo/70 hover:text-petroleo shrink-0"
+                  aria-label="Cerrar aviso"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
         {/* DICTADO INTELIGENTE POR VOZ (es-AR) */}
         <VoiceInputButton
@@ -747,6 +915,18 @@ export default function FacturarTab({
           </div>
         </div>
       )}
+        </>
+      )}
+
+      {/* MODAL MI MARCA Y DISEÑO (disponible desde Facturas ARCA y Presupuestos) */}
+      <MarcaDisenoModal
+        key={`${cliente?.CUIT || 'cli'}-${modalDisenoAbierto}`}
+        abierto={modalDisenoAbierto}
+        cliente={cliente}
+        disenoInicial={disenoMarca}
+        onGuardar={handleGuardarDiseno}
+        onCerrar={() => setModalDisenoAbierto(false)}
+      />
     </div>
   );
 }
